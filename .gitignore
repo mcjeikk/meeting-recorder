@@ -1,0 +1,48 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Entornos virtuales (se reconstruyen con requirements.txt) =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Configuración local / secretos (NO subir) =====
+.env
+*.env
+.claude/settings.local.json
+config.local.json
+*.secret
+
+# ===== Salidas de la app y archivos de trabajo =====
+# Grabaciones / audio de prueba que pudieran quedar en el repo por accidente
+*.mp4
+*.mkv
+*.wav
+*.m4a
+# Logs y archivos temporales de pruebas
+*.log
+_speed_test.py
+_prev_test.py
+
+# ===== Windows / OneDrive =====
+Thumbs.db
+ehthumbs.db
+desktop.ini
+Desktop.ini
+$RECYCLE.BIN/
+
+# ===== Editores / IDE =====
+.vscode/
+.idea/
+*.swp
+*~

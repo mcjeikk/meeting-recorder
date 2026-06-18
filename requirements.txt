@@ -1,0 +1,21 @@
+# Dependencias del Grabador de Reuniones (MVP Windows)
+# ----------------------------------------------------
+# Interfaz gráfica (Qt para Python)
+PySide6>=6.6
+
+# Captura de AUDIO DEL SISTEMA (loopback WASAPI) — solo Windows.
+# Fork de PyAudio con soporte de loopback "out of the box".
+PyAudioWPatch>=0.2.12.7 ; sys_platform == "win32"
+
+# Captura de MICRÓFONO (PortAudio multiplataforma)
+sounddevice>=0.4.6
+
+# Manejo de buffers de audio
+numpy>=1.24
+
+# Binario de FFmpeg empaquetado (encode + mux). Evita instalar FFmpeg aparte.
+imageio-ffmpeg>=0.4.9
+
+# Captura de VENTANA con Windows.Graphics.Capture (capta contenido por GPU, como
+# Teams/Chrome, que con gdigrab salía negro). Trae opencv-python como dependencia.
+windows-capture>=2.0.0 ; sys_platform == "win32"

@@ -1,0 +1,993 @@
+"""Ventana principal (PySide6) — tema oscuro moderno.
+
+Funciones de la interfaz:
+- Selección de fuente (ventana / pantalla) con VISTA PREVIA (miniatura).
+- Selección de micrófono que se puede CAMBIAR EN VIVO durante la grabación.
+- Interruptor de audio del sistema, con medidores de nivel de color.
+- Botón grande Grabar/Detener + Pausar/Reanudar, cronómetro e indicador de grabación.
+- Ícono en la bandeja del sistema y atajos de teclado GLOBALES (Ctrl+Shift+R/P).
+"""
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from pathlib import Path
+from typing import List, Optional
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QPainter,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.capture.monitor import AudioMonitor
+from app.core.config import AppConfig, AudioDevice, RecordingSettings, VideoSource
+from app.core.mic_usage import microphone_users
+from app.core.orchestrator import Recorder
+from app.transcription.integration import is_available as transcriptor_disponible
+from app.transcription.jobs import JobStore
+from app.transcription.worker import TranscriptionWorker
+from app.ui.hotkeys import GlobalHotkeys
+
+# --- Paleta y estilos (tema oscuro) -----------------------------------------
+_ACCENT = "#2ecc71"
+_DANGER = "#e74c3c"
+_STYLE = f"""
+QMainWindow, QWidget#central {{ background:#1e1f24; }}
+QLabel {{ color:#e6e6e6; }}
+QLabel#muted {{ color:#9aa0a8; }}
+QGroupBox {{
+    background:#2a2c33; border:1px solid #34373f; border-radius:10px;
+    margin-top:14px; padding:10px; color:#e6e6e6; font-weight:bold;
+}}
+QGroupBox::title {{ subcontrol-origin:margin; left:12px; padding:0 4px; color:#9aa0a8; }}
+QComboBox, QLineEdit {{
+    background:#1a1b1f; color:#e6e6e6; border:1px solid #34373f;
+    border-radius:6px; padding:6px 8px; min-height:18px;
+}}
+QComboBox:disabled {{ color:#6b7077; }}
+QComboBox QAbstractItemView {{ background:#1a1b1f; color:#e6e6e6; selection-background-color:#2ecc71; }}
+QPushButton {{
+    background:#34373f; color:#e6e6e6; border:none; border-radius:6px; padding:8px 12px;
+}}
+QPushButton:hover {{ background:#3d414a; }}
+QPushButton:disabled {{ color:#6b7077; background:#2a2c33; }}
+QCheckBox {{ color:#e6e6e6; spacing:8px; }}
+QProgressBar {{ background:#15161a; border:none; border-radius:4px; }}
+QProgressBar::chunk {{
+    border-radius:4px;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #2ecc71, stop:0.6 #2ecc71, stop:0.8 #f1c40f, stop:1 #e74c3c);
+}}
+QFrame#banner {{ background:#163b29; border:1px solid #1e9e54; border-radius:8px; }}
+QFrame#banner QLabel {{ color:#eafff2; font-weight:bold; }}
+"""
+
+# Estilo para que los diálogos (errores/preguntas) sean legibles sobre tema oscuro.
+_MSGBOX_QSS = (
+    "QMessageBox { background:#23252b; }"
+    "QMessageBox QLabel { color:#e8e8e8; font-size:13px; }"
+    "QMessageBox QPushButton { background:#34373f; color:#e6e6e6; border:none;"
+    " border-radius:6px; padding:7px 18px; min-width:72px; }"
+    "QMessageBox QPushButton:hover { background:#3d414a; }"
+)
+
+_RECORD_BTN = (
+    "QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+    " stop:0 #34e07a, stop:1 #1e9e54); color:#06210f; font-size:17px; font-weight:bold;"
+    " border-radius:10px; padding:15px; } QPushButton:hover { background:#33d977; }"
+    " QPushButton:disabled { background:#2f5c43; color:#cfe6da; }"
+)
+_STOP_BTN = (
+    "QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+    " stop:0 #ef5b4a, stop:1 #c0392b); color:white; font-size:17px; font-weight:bold;"
+    " border-radius:10px; padding:15px; } QPushButton:hover { background:#e74c3c; }"
+)
+_BUSY_BAR = (
+    "QProgressBar { background:#15161a; border:none; border-radius:3px; }"
+    "QProgressBar::chunk { background:#3b82f6; border-radius:3px; }"
+)
+
+
+def _make_dot_icon(color: str, size: int = 64) -> QIcon:
+    """Genera un ícono circular (para la bandeja)."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor(color))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(int(size * 0.12), int(size * 0.12), int(size * 0.76), int(size * 0.76))
+    p.end()
+    return QIcon(pm)
+
+
+def app_icon() -> QIcon:
+    """Ícono de la app: usa assets/icon.ico si existe, si no uno generado."""
+    ico = Path(__file__).resolve().parents[2] / "assets" / "icon.ico"
+    if ico.exists():
+        return QIcon(str(ico))
+    return _make_dot_icon(_DANGER)
+
+
+class MainWindow(QMainWindow):
+    # Señales para actualizar la UI desde hilos de fondo de forma segura.
+    _status_sig = Signal(str)
+    _finished_sig = Signal(str)
+    _error_sig = Signal(str)
+    _started_sig = Signal()
+    _progress_sig = Signal(int)
+    _tx_update_sig = Signal(dict)  # snapshots del worker de transcripción
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Grabador de Reuniones")
+        self.setMinimumWidth(540)
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(_STYLE)
+
+        self._config = AppConfig.load()
+        self._windows: List[VideoSource] = []
+        self._mics: List[AudioDevice] = []
+        self._last_output: Optional[str] = None
+        self._blink_on = False
+        self._preview_counter = 0
+        self._quit_after_finalize = False
+        self._hotkeys_registered = False
+        self._own_hint = os.path.basename(sys.executable)  # para excluirnos en la detección
+        self._monitor = AudioMonitor()  # medidores en vivo cuando NO se graba
+
+        self._recorder = Recorder(
+            on_status=self._status_sig.emit,
+            on_finished=self._finished_sig.emit,
+            on_error=self._error_sig.emit,
+            on_progress=self._progress_sig.emit,
+        )
+        self._status_sig.connect(self._set_status)
+        self._finished_sig.connect(self._on_finished)
+        self._error_sig.connect(self._on_error)
+        self._started_sig.connect(self._on_started)
+        self._progress_sig.connect(self._on_progress)
+        self._busy = False
+
+        # Transcripción (Fase 2): cola persistente + worker en hilo de fondo.
+        # El worker emite snapshots por señal (mismo patrón que el Recorder) y
+        # consulta is_recording() para no competir jamás con una grabación.
+        self._tx_last: dict = {}
+        self._tx_store = JobStore()
+        self._tx_worker = TranscriptionWorker(
+            self._tx_store,
+            get_config=lambda: self._config,
+            on_update=self._tx_update_sig.emit,
+            is_recording=self._recorder.is_recording,
+        )
+        self._tx_update_sig.connect(self._on_tx_update)
+
+        self._build_ui()
+        self._setup_tray()
+        self._setup_hotkeys()
+        self._refresh_sources()
+        self._refresh_mics()
+        self._apply_saved_config()
+        self._update_mute_button()
+        self._update_preview()
+
+        # Tamaño inicial: el del contenido pero sin exceder el área útil del
+        # monitor (con escala de Windows alta el contenido completo puede no
+        # caber y la ventana nacería con el botón Grabar bajo la barra de tareas).
+        avail = QGuiApplication.primaryScreen().availableGeometry()
+        hint = self._central.sizeHint()
+        self.resize(
+            min(hint.width() + 20, avail.width() - 40),
+            min(hint.height() + 140, avail.height() - 60),
+        )
+        frame = self.frameGeometry()
+        frame.moveCenter(avail.center())
+        self.move(frame.topLeft())
+
+        # Arranca el worker DESPUÉS de construir la UI: reconcilia trabajos
+        # pendientes de sesiones anteriores y los retoma solo.
+        self._tx_worker.start()
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+        # Pre-cargar la detección de encoder en segundo plano para que el PRIMER
+        # "Grabar" sea inmediato (si no, la primera vez tardaría ~1 s probando).
+        threading.Thread(target=self._prewarm_encoder, daemon=True).start()
+
+    def _prewarm_encoder(self) -> None:
+        try:
+            from app.encode.ffmpeg import detect_h264_encoder
+
+            detect_h264_encoder()
+        except Exception:
+            pass
+
+    # --- construcción de la interfaz ----------------------------------------
+    def _build_ui(self) -> None:
+        central = QWidget()
+        central.setObjectName("central")
+        root = QVBoxLayout(central)
+        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        # Encabezado con indicador de grabación
+        header = QHBoxLayout()
+        title = QLabel("Grabador de Reuniones")
+        title.setStyleSheet("font-size:18px; font-weight:bold;")
+        self._rec_dot = QLabel("●")
+        self._rec_dot.setStyleSheet(f"color:{_DANGER}; font-size:16px;")
+        self._rec_dot.setVisible(False)
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self._rec_dot)
+        root.addLayout(header)
+
+        # Vista previa
+        prev_box = QGroupBox("Vista previa")
+        prev_lay = QVBoxLayout(prev_box)
+        self._preview = QLabel("Sin vista previa")
+        self._preview.setObjectName("muted")
+        self._preview.setAlignment(Qt.AlignCenter)
+        # Elástica (no fija): es el ÚNICO widget que cede alto, así la ventana
+        # sí puede encogerse/estirarse verticalmente. El mínimo explícito evita
+        # que el pixmap (sizeHint del QLabel) bloquee el encogimiento.
+        self._preview.setMinimumSize(160, 120)
+        self._preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._preview.setStyleSheet("background:#15161a; border-radius:8px;")
+        prev_lay.addWidget(self._preview)
+        root.addWidget(prev_box, 1)
+
+        # 1. Fuente
+        src_box = QGroupBox("1. ¿Qué quieres grabar?")
+        src_lay = QHBoxLayout(src_box)
+        self._source_combo = QComboBox()
+        self._source_combo.currentIndexChanged.connect(self._update_preview)
+        self._refresh_btn = QPushButton("🔄 Actualizar")
+        self._refresh_btn.clicked.connect(self._on_refresh)
+        src_lay.addWidget(self._source_combo, 1)
+        src_lay.addWidget(self._refresh_btn)
+        root.addWidget(src_box)
+
+        # 2. Micrófono (se puede cambiar en vivo y silenciar)
+        mic_box = QGroupBox("2. Micrófono  (cámbialo o siléncialo durante la grabación)")
+        mic_lay = QVBoxLayout(mic_box)
+        mic_row = QHBoxLayout()
+        self._mic_combo = QComboBox()
+        self._mic_combo.activated.connect(self._on_mic_activated)
+        self._mute_btn = QPushButton("🎤 Activo")
+        self._mute_btn.setFixedWidth(130)
+        self._mute_btn.clicked.connect(self._toggle_mute)
+        mic_row.addWidget(self._mic_combo, 1)
+        mic_row.addWidget(self._mute_btn)
+        self._mic_meter = self._make_meter()
+        mic_lay.addLayout(mic_row)
+        mic_lay.addWidget(self._mic_meter)
+        # Indicador informativo: ¿alguna app (Teams/Zoom/Meet) está en llamada?
+        self._mic_usage_label = QLabel("Micrófono del sistema: …")
+        self._mic_usage_label.setObjectName("muted")
+        mic_lay.addWidget(self._mic_usage_label)
+        hint = QLabel("Para no grabar tu voz, usa 🔇 o el atajo Ctrl+Shift+M.")
+        hint.setObjectName("muted")
+        mic_lay.addWidget(hint)
+        root.addWidget(mic_box)
+
+        # 3. Audio del sistema
+        sys_box = QGroupBox("3. Audio del sistema (lo que escuchas)")
+        sys_lay = QVBoxLayout(sys_box)
+        self._sys_check = QCheckBox("Grabar el audio del sistema")
+        self._sys_check.setChecked(True)
+        self._sys_meter = self._make_meter()
+        sys_lay.addWidget(self._sys_check)
+        sys_lay.addWidget(self._sys_meter)
+        self._aec_check = QCheckBox("Reducir eco del micrófono (útil si grabas con altavoces)")
+        sys_lay.addWidget(self._aec_check)
+        root.addWidget(sys_box)
+
+        # 4. Carpeta de salida + transcripción automática
+        out_box = QGroupBox("4. Carpeta de salida")
+        out_v = QVBoxLayout(out_box)
+        out_lay = QHBoxLayout()
+        self._out_edit = QLineEdit()
+        self._out_edit.setReadOnly(True)
+        out_btn = QPushButton("Cambiar…")
+        out_btn.clicked.connect(self._choose_output)
+        out_lay.addWidget(self._out_edit, 1)
+        out_lay.addWidget(out_btn)
+        out_v.addLayout(out_lay)
+        self._tx_check = QCheckBox(
+            "📝 Transcribir al terminar (con hablantes; tarda ~2x la duración en este equipo)"
+        )
+        out_v.addWidget(self._tx_check)
+        root.addWidget(out_box)
+
+        # 5. Botones de grabación
+        btn_row = QHBoxLayout()
+        self._record_btn = QPushButton("●  Grabar")
+        self._record_btn.setStyleSheet(_RECORD_BTN)
+        self._record_btn.setCursor(Qt.PointingHandCursor)
+        self._record_btn.clicked.connect(self._toggle_record)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(26)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 130))
+        self._record_btn.setGraphicsEffect(shadow)
+        self._pause_btn = QPushButton("⏸  Pausar")
+        self._pause_btn.setCursor(Qt.PointingHandCursor)
+        self._pause_btn.clicked.connect(self._toggle_pause)
+        self._pause_btn.setVisible(False)
+        btn_row.addWidget(self._record_btn, 2)
+        btn_row.addWidget(self._pause_btn, 1)
+        root.addLayout(btn_row)
+
+        # Estado
+        status_row = QHBoxLayout()
+        self._timer_label = QLabel("00:00:00")
+        self._timer_label.setStyleSheet("font-size:16px; font-weight:bold;")
+        self._status_label = QLabel("Listo para grabar")
+        self._status_label.setObjectName("muted")
+        status_row.addWidget(self._timer_label)
+        status_row.addStretch(1)
+        status_row.addWidget(self._status_label)
+        root.addLayout(status_row)
+
+        # Barra de actividad (spinner) para iniciar / procesar sin congelar.
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 0)            # indeterminado = "ocupado"
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setFixedHeight(6)
+        self._busy_bar.setStyleSheet(_BUSY_BAR)
+        self._busy_bar.setVisible(False)
+        root.addWidget(self._busy_bar)
+
+        # Aviso de resultado (en la app, legible) en lugar de un diálogo modal.
+        self._result_banner = QFrame()
+        self._result_banner.setObjectName("banner")
+        bl = QHBoxLayout(self._result_banner)
+        bl.setContentsMargins(12, 8, 8, 8)
+        self._result_label = QLabel("✓ Grabación guardada")
+        self._open_btn = QPushButton("📂 Abrir carpeta")
+        self._open_btn.setCursor(Qt.PointingHandCursor)
+        self._open_btn.clicked.connect(self._open_output_folder)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedWidth(30)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(lambda: self._result_banner.setVisible(False))
+        bl.addWidget(self._result_label, 1)
+        bl.addWidget(self._open_btn)
+        bl.addWidget(close_btn)
+        self._result_banner.setVisible(False)
+        root.addWidget(self._result_banner)
+
+        # Estado de la transcripción (misma estética que el banner de resultado).
+        self._tx_banner = QFrame()
+        self._tx_banner.setObjectName("banner")
+        txl = QHBoxLayout(self._tx_banner)
+        txl.setContentsMargins(12, 8, 8, 8)
+        tx_col = QVBoxLayout()
+        tx_col.setSpacing(4)
+        self._tx_label = QLabel("")
+        self._tx_bar = QProgressBar()
+        self._tx_bar.setTextVisible(False)
+        self._tx_bar.setFixedHeight(6)
+        tx_col.addWidget(self._tx_label)
+        tx_col.addWidget(self._tx_bar)
+        self._tx_open_btn = QPushButton("📄 Abrir transcripción")
+        self._tx_open_btn.setCursor(Qt.PointingHandCursor)
+        self._tx_open_btn.clicked.connect(self._open_transcription)
+        self._tx_retry_btn = QPushButton("Reintentar")
+        self._tx_retry_btn.clicked.connect(self._retry_transcription)
+        self._tx_log_btn = QPushButton("Ver log")
+        self._tx_log_btn.clicked.connect(self._open_tx_log)
+        tx_close = QPushButton("✕")
+        tx_close.setFixedWidth(30)
+        tx_close.setCursor(Qt.PointingHandCursor)
+        tx_close.clicked.connect(lambda: self._tx_banner.setVisible(False))
+        txl.addLayout(tx_col, 1)
+        txl.addWidget(self._tx_open_btn)
+        txl.addWidget(self._tx_retry_btn)
+        txl.addWidget(self._tx_log_btn)
+        txl.addWidget(tx_close)
+        self._tx_banner.setVisible(False)
+        root.addWidget(self._tx_banner)
+
+        # Dentro de un QScrollArea el alto mínimo de la ventana deja de ser la
+        # suma de todo el contenido (~800 px, no cabía en portátiles con escala
+        # de Windows alta y bloqueaba el redimensionado vertical): si el usuario
+        # la encoge, aparece scroll en vez de impedirlo.
+        self._central = central
+        scroll = QScrollArea()
+        scroll.setWidget(central)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        self.setCentralWidget(scroll)
+
+    def _make_meter(self) -> QProgressBar:
+        m = QProgressBar()
+        m.setRange(0, 100)
+        m.setTextVisible(False)
+        m.setFixedHeight(10)
+        return m
+
+    # --- bandeja y atajos ---------------------------------------------------
+    def _setup_tray(self) -> None:
+        self._tray = QSystemTrayIcon(app_icon(), self)
+        self._tray.setToolTip("Grabador de Reuniones")
+        menu = QMenu()
+        act_show = QAction("Mostrar ventana", self)
+        act_show.triggered.connect(self._show_from_tray)
+        act_rec = QAction("Iniciar / Detener", self)
+        act_rec.triggered.connect(self._toggle_record)
+        act_pause = QAction("Pausar / Reanudar", self)
+        act_pause.triggered.connect(self._toggle_pause)
+        act_mute = QAction("Silenciar / activar micrófono", self)
+        act_mute.triggered.connect(self._toggle_mute)
+        act_quit = QAction("Salir", self)
+        act_quit.triggered.connect(self._quit_app)
+        for a in (act_show, act_rec, act_pause, act_mute):
+            menu.addAction(a)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _setup_hotkeys(self) -> None:
+        self._hotkeys = GlobalHotkeys(
+            self._toggle_record, self._toggle_pause, self._toggle_mute
+        )
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.instance().installNativeEventFilter(self._hotkeys)
+        except Exception:
+            pass
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._hotkeys_registered:
+            # Registrar atajos globales (la ventana ya tiene HWND válido).
+            try:
+                self._hotkeys.register(int(self.winId()))
+            except Exception:
+                pass
+            # Excluir esta ventana de la captura: el recorder NO aparece en la
+            # grabación, pero sigue visible y usable para ti.
+            self._exclude_from_capture()
+            self._hotkeys_registered = True
+        # Medidores en vivo mientras la ventana está visible y no se graba.
+        self._start_monitor()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._stop_monitor()  # liberar el micrófono al minimizar a la bandeja
+
+    def _start_monitor(self) -> None:
+        if self._recorder.is_recording():
+            return
+        try:
+            self._monitor.start(self._mic_combo.currentData())
+        except Exception:
+            pass
+
+    def _stop_monitor(self) -> None:
+        try:
+            self._monitor.stop()
+        except Exception:
+            pass
+
+    def _exclude_from_capture(self) -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            WDA_EXCLUDEFROMCAPTURE = 0x11
+            ctypes.windll.user32.SetWindowDisplayAffinity(
+                int(self.winId()), WDA_EXCLUDEFROMCAPTURE
+            )
+        except Exception:
+            pass
+
+    # --- poblar selectores ---------------------------------------------------
+    def _on_refresh(self) -> None:
+        self._refresh_sources()
+        self._update_preview()
+
+    def _refresh_sources(self) -> None:
+        from app.capture.windows_video import list_windows
+
+        prev = self._source_combo.currentData()
+        self._source_combo.blockSignals(True)
+        self._source_combo.clear()
+        self._source_combo.addItem("🖥️  Pantalla completa", userData=None)
+        if sys.platform == "win32":
+            self._windows = list_windows()
+            for w in self._windows:
+                self._source_combo.addItem(f"🪟  {w.title}", userData=w)
+        # intentar conservar la selección previa
+        if isinstance(prev, VideoSource):
+            idx = self._source_combo.findText(f"🪟  {prev.title}")
+            if idx >= 0:
+                self._source_combo.setCurrentIndex(idx)
+        self._source_combo.blockSignals(False)
+
+    def _refresh_mics(self) -> None:
+        from app.capture.windows_audio import list_microphones
+
+        self._mic_combo.blockSignals(True)
+        self._mic_combo.clear()
+        self._mic_combo.addItem("Sin micrófono", userData=None)
+        self._mics = list_microphones()
+        for m in self._mics:
+            self._mic_combo.addItem(m.name, userData=m)
+        if self._mics:
+            self._mic_combo.setCurrentIndex(1)
+        self._mic_combo.blockSignals(False)
+
+    def _apply_saved_config(self) -> None:
+        self._out_edit.setText(self._config.output_dir or str(Path.home()))
+        self._sys_check.setChecked(self._config.capture_system_audio)
+        self._aec_check.setChecked(self._config.reduce_echo)
+        disponible = transcriptor_disponible(self._config.transcriptor_dir)
+        self._tx_check.setEnabled(disponible)
+        self._tx_check.setChecked(self._config.transcribe_after_recording and disponible)
+        if not disponible:
+            self._tx_check.setToolTip(
+                "No se encontró el proyecto Transcriptor.\n"
+                "Revisa 'transcriptor_dir' en %APPDATA%\\MeetingRecorder\\config.json"
+            )
+        if self._config.last_mic_name:
+            idx = self._mic_combo.findText(self._config.last_mic_name)
+            if idx >= 0:
+                self._mic_combo.setCurrentIndex(idx)
+
+    # --- vista previa --------------------------------------------------------
+    def _update_preview(self) -> None:
+        try:
+            source = self._source_combo.currentData()
+            # VENTANA -> usar WGC (igual que la grabación); grabWindow daría blanco
+            # con ventanas aceleradas por GPU como Teams.
+            if isinstance(source, VideoSource) and source.kind == "window" and source.hwnd:
+                if self._recorder.is_recording():
+                    frame = self._recorder.current_video_frame()  # del backend, gratis
+                else:
+                    from app.capture.windows_video import grab_window_frame
+
+                    frame = grab_window_frame(int(source.hwnd))
+                if frame is not None:
+                    self._set_preview_pixmap(self._bgra_to_pixmap(frame))
+                return
+
+            # PANTALLA COMPLETA -> capturar el escritorio compuesto (sí funciona).
+            from PySide6.QtWidgets import QApplication
+
+            screen = QApplication.primaryScreen()
+            if screen is None:
+                return
+            pm = screen.grabWindow(0)
+            if not pm.isNull():
+                self._set_preview_pixmap(pm)
+        except Exception:
+            pass
+
+    def _set_preview_pixmap(self, pm: QPixmap) -> None:
+        scaled = pm.scaled(
+            self._preview.width(), self._preview.height(),
+            Qt.KeepAspectRatio, Qt.SmoothTransformation,
+        )
+        self._preview.setPixmap(scaled)
+
+    def _bgra_to_pixmap(self, frame) -> QPixmap:
+        """Convierte un fotograma BGRA (numpy) a QPixmap (opaco)."""
+        h, w = frame.shape[:2]
+        img = QImage(frame.data, w, h, w * 4, QImage.Format_RGB32).copy()
+        return QPixmap.fromImage(img)
+
+    # --- acciones ------------------------------------------------------------
+    def _choose_output(self) -> None:
+        current = self._out_edit.text() or str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Elige la carpeta de salida", current)
+        if folder:
+            self._out_edit.setText(folder)
+
+    def _build_settings(self) -> RecordingSettings:
+        source = self._source_combo.currentData()
+        if source is None:
+            source = VideoSource(kind="screen")
+        return RecordingSettings(
+            video_source=source,
+            mic_device=self._mic_combo.currentData(),
+            capture_system_audio=self._sys_check.isChecked(),
+            reduce_echo=self._aec_check.isChecked(),
+            output_dir=Path(self._out_edit.text()),
+        )
+
+    def _toggle_record(self) -> None:
+        if self._busy:
+            return  # ya está iniciando o procesando
+
+        if self._recorder.is_recording():
+            # DETENER: el cierre de FFmpeg + mux pueden tardar -> en segundo plano.
+            self._rec_dot.setVisible(False)
+            self._enter_busy("Deteniendo y guardando…", "⏳  Procesando…")
+            threading.Thread(target=self._recorder.stop, daemon=True).start()
+            return
+
+        if not self._sys_check.isChecked() and self._mic_combo.currentData() is None:
+            box = self._dialog(
+                QMessageBox.Question, "Sin audio",
+                "No seleccionaste micrófono ni audio del sistema. ¿Grabar solo video?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if box.exec() != QMessageBox.Yes:
+                return
+        try:
+            settings = self._build_settings()
+            self._save_config(settings)
+        except Exception as exc:
+            self._dialog(QMessageBox.Critical, "Error", str(exc)).exec()
+            return
+        # INICIAR: lanzar FFmpeg/streams puede tardar -> en segundo plano.
+        self._stop_monitor()
+        self._result_banner.setVisible(False)
+        self._enter_busy("Iniciando grabación…", "⏳  Iniciando…")
+        threading.Thread(target=self._do_start, args=(settings,), daemon=True).start()
+
+    def _dialog(self, icon, title: str, text: str, buttons=QMessageBox.Ok):
+        """Crea un QMessageBox con estilo legible sobre el tema oscuro."""
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setStandardButtons(buttons)
+        box.setStyleSheet(_MSGBOX_QSS)
+        return box
+
+    def _do_start(self, settings) -> None:
+        try:
+            self._recorder.start(settings)
+            self._started_sig.emit()
+        except Exception as exc:
+            self._error_sig.emit(str(exc))
+
+    def _on_started(self) -> None:
+        self._exit_busy()
+        self._set_recording_ui(True)
+
+    def _enter_busy(self, status_msg: str, btn_text: str) -> None:
+        self._busy = True
+        self._busy_bar.setRange(0, 0)  # indeterminado hasta que haya % real
+        self._busy_bar.setVisible(True)
+        self._status_label.setText(status_msg)
+        self._record_btn.setText(btn_text)
+        self._record_btn.setEnabled(False)
+        self._pause_btn.setEnabled(False)
+
+    def _exit_busy(self) -> None:
+        self._busy = False
+        self._busy_bar.setVisible(False)
+        self._busy_bar.setRange(0, 0)  # volver a indeterminado para la próxima vez
+        self._record_btn.setEnabled(True)
+
+    def _on_progress(self, pct: int) -> None:
+        if not self._busy:
+            return
+        self._busy_bar.setRange(0, 100)  # barra determinada con %
+        self._busy_bar.setValue(pct)
+        self._status_label.setText(f"Guardando… {pct}%")
+
+    def _toggle_pause(self) -> None:
+        if not self._recorder.is_recording():
+            return
+        if self._recorder.is_paused():
+            self._recorder.resume()
+            self._pause_btn.setText("⏸ Pausar")
+        else:
+            self._recorder.pause()
+            self._pause_btn.setText("▶ Reanudar")
+
+    def _on_mic_activated(self, _index: int) -> None:
+        device = self._mic_combo.currentData()
+        if self._recorder.is_recording():
+            self._recorder.change_mic(device)  # cambio EN VIVO
+        else:
+            self._monitor.set_mic(device)  # actualizar el medidor en vivo
+
+    def _toggle_mute(self) -> None:
+        self._recorder.set_mic_muted(not self._recorder.is_mic_muted())
+        self._update_mute_button()
+
+    def _update_mute_button(self) -> None:
+        muted = self._recorder.is_mic_muted()
+        if muted:
+            self._mute_btn.setText("🔇 Silenciado")
+            self._mute_btn.setStyleSheet(
+                f"QPushButton {{ background:{_DANGER}; color:white; border-radius:6px; padding:8px; }}"
+            )
+        else:
+            self._mute_btn.setText("🎤 Activo")
+            self._mute_btn.setStyleSheet("")
+
+    def _save_config(self, settings: RecordingSettings) -> None:
+        self._config.output_dir = str(settings.output_dir)
+        self._config.capture_system_audio = settings.capture_system_audio
+        self._config.reduce_echo = settings.reduce_echo
+        self._config.last_mic_name = settings.mic_device.name if settings.mic_device else ""
+        self._config.transcribe_after_recording = self._tx_check.isChecked()
+        self._config.save()
+
+    # --- callbacks del orquestador (vía señales) ----------------------------
+    def _set_status(self, msg: str) -> None:
+        self._status_label.setText(msg)
+
+    def _on_finished(self, path: str) -> None:
+        self._last_output = path
+        self._exit_busy()
+        self._set_recording_ui(False)
+        self._record_btn.setEnabled(True)
+        self._status_label.setText("Listo ✓")
+        # Encolar la transcripción ANTES del posible cierre de la app: el job
+        # queda persistido en disco y se procesa ahora o al siguiente arranque.
+        encolada = False
+        if self._tx_check.isChecked() and transcriptor_disponible(self._config.transcriptor_dir):
+            try:
+                encolada = self._tx_worker.enqueue(
+                    path, self._config.transcription_language
+                ) is not None
+            except Exception:
+                pass
+        sufijo = " · transcripción en cola" if encolada else ""
+        self._result_label.setText(f"✓ Grabación guardada{sufijo}:  {os.path.basename(path)}")
+        self._result_banner.setVisible(True)
+        self._update_preview()
+        if self._quit_after_finalize:
+            self._finish_quit()
+            return
+        self._start_monitor()  # reanudar medidores en vivo
+        # Notificación nativa solo si la ventana está minimizada/en bandeja.
+        if self._tray.isVisible() and not self.isActiveWindow():
+            self._tray.showMessage("Grabación lista", os.path.basename(path),
+                                   QSystemTrayIcon.Information, 4000)
+
+    def _on_error(self, msg: str) -> None:
+        self._exit_busy()
+        self._set_recording_ui(False)
+        self._record_btn.setEnabled(True)
+        self._status_label.setText("Error")
+        if self._quit_after_finalize:
+            self._finish_quit()
+            return
+        self._start_monitor()
+        self._dialog(QMessageBox.Critical, "Error al procesar", msg).exec()
+
+    # --- transcripción (vía señal del worker) --------------------------------
+    def _on_tx_update(self, snap: dict) -> None:
+        self._tx_last = snap
+        nombre = Path(snap.get("media_path", "")).stem
+        estado = snap.get("status", "")
+        stage = snap.get("stage") or estado
+        pct = snap.get("progress")
+
+        es_done = estado == "done"
+        es_error = estado == "error"
+        self._tx_open_btn.setVisible(es_done)
+        self._tx_retry_btn.setVisible(es_error)
+        self._tx_log_btn.setVisible(es_error)
+        self._tx_bar.setVisible(not es_done and not es_error)
+        self._tx_banner.setVisible(True)
+
+        if es_done:
+            nota = f"  ({snap['note']})" if snap.get("note") else ""
+            self._tx_label.setText(f"✓ Transcripción lista{nota}:  {nombre}")
+            if self._tray.isVisible() and not self.isActiveWindow():
+                self._tray.showMessage("Transcripción lista", nombre,
+                                       QSystemTrayIcon.Information, 5000)
+        elif es_error:
+            detalle = (snap.get("error") or "")[:140]
+            self._tx_label.setText(f"⚠ Transcripción falló:  {nombre}\n{detalle}")
+        else:
+            self._tx_label.setText(f"🎙 {stage}  ·  {nombre}")
+            if pct is not None and pct > 0:
+                self._tx_bar.setRange(0, 100)
+                self._tx_bar.setValue(pct)
+            else:
+                self._tx_bar.setRange(0, 0)  # indeterminado (cola/diarización)
+
+    def _open_transcription(self) -> None:
+        carpeta = self._tx_last.get("result_dir")
+        if carpeta and os.path.isdir(carpeta):
+            try:
+                os.startfile(carpeta)  # type: ignore[attr-defined]
+            except OSError:
+                pass
+
+    def _open_tx_log(self) -> None:
+        log = self._tx_last.get("log_path")
+        if log and os.path.exists(log):
+            try:
+                os.startfile(log)  # type: ignore[attr-defined]
+            except OSError:
+                pass
+
+    def _retry_transcription(self) -> None:
+        job_id = self._tx_last.get("id")
+        if job_id:
+            self._tx_worker.retry(job_id)
+
+    # --- estado de la UI -----------------------------------------------------
+    def _set_recording_ui(self, recording: bool) -> None:
+        # El selector de micrófono queda ACTIVO durante la grabación (cambio en vivo).
+        for w in (self._source_combo, self._refresh_btn, self._sys_check):
+            w.setEnabled(not recording)
+        self._pause_btn.setVisible(recording)
+        self._pause_btn.setEnabled(recording)
+        self._rec_dot.setVisible(recording)
+        if recording:
+            self._record_btn.setText("■ Detener")
+            self._record_btn.setStyleSheet(_STOP_BTN)
+            self._pause_btn.setText("⏸ Pausar")
+        else:
+            self._record_btn.setText("● Grabar")
+            self._record_btn.setStyleSheet(_RECORD_BTN)
+
+    def _tick(self) -> None:
+        secs = int(self._recorder.elapsed_seconds())
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        self._timer_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
+
+        # Medidores: del grabador si graba; del monitor en vivo si está inactivo.
+        if self._recorder.is_recording():
+            self._sys_meter.setValue(int(self._recorder.system_level() * 100))
+            self._mic_meter.setValue(int(self._recorder.mic_level() * 100))
+        else:
+            self._sys_meter.setValue(int(self._monitor.system_level() * 100))
+            self._mic_meter.setValue(int(self._monitor.mic_level() * 100))
+
+        self._preview_counter += 1
+        if self._recorder.is_recording():
+            if self._recorder.is_paused():
+                self._rec_dot.setVisible(True)  # sólido en pausa
+            elif self._preview_counter % 5 == 0:  # parpadeo cada ~500 ms
+                self._blink_on = not self._blink_on
+                self._rec_dot.setVisible(self._blink_on)
+            # Vista previa EN VIVO durante la grabación (cada ~1 s).
+            if not self._recorder.is_paused() and self._preview_counter % 10 == 0:
+                self._update_preview()
+        elif self._preview_counter % 15 == 0:
+            self._update_preview()
+
+        # Detección de uso del micrófono por otras apps (~cada 1.5 s).
+        if self._preview_counter % 15 == 0:
+            self._update_mic_usage()
+
+    def _update_mic_usage(self) -> None:
+        try:
+            users = microphone_users((self._own_hint, "python"))
+        except Exception:
+            users = []
+        names = sorted({u.name for u in users})
+        in_meeting = bool(names)
+        if in_meeting:
+            self._mic_usage_label.setText(
+                "🔴 En llamada — " + ", ".join(names) + " está usando el micrófono"
+            )
+        else:
+            self._mic_usage_label.setText("🟢 Sin llamada activa")
+
+    def _open_output_folder(self) -> None:
+        if not self._last_output:
+            return
+        folder = os.path.dirname(self._last_output)
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                os.system(f'open "{folder}"')
+            else:
+                os.system(f'xdg-open "{folder}"')
+        except Exception:
+            pass
+
+    # --- bandeja: mostrar/ocultar/salir -------------------------------------
+    def _on_tray_activated(self, reason) -> None:
+        if reason == QSystemTrayIcon.DoubleClick:
+            self._show_from_tray()
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self) -> None:
+        # Salir desde el menú de la bandeja = mismo flujo que cerrar la ventana.
+        self.close()
+
+    def _finish_quit(self) -> None:
+        """Limpia recursos y cierra la aplicación de verdad."""
+        from PySide6.QtWidgets import QApplication
+
+        self._stop_monitor()
+        try:
+            self._hotkeys.unregister()
+        except Exception:
+            pass
+        try:
+            self._tray.hide()
+        except Exception:
+            pass
+        QApplication.quit()
+
+    def closeEvent(self, event) -> None:
+        # Si hay una grabación en curso, ofrecer finalizarla antes de salir.
+        if self._recorder.is_recording():
+            box = self._dialog(
+                QMessageBox.Question, "Grabación en curso",
+                "Hay una grabación en curso.\n¿Detenerla, guardar el archivo y salir?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if box.exec() != QMessageBox.Yes:
+                event.ignore()
+                return
+            # Detener y salir cuando termine de procesarse (en _on_finished/_on_error).
+            self._quit_after_finalize = True
+            self._enter_busy("Guardando antes de salir…", "⏳  Guardando…")
+            threading.Thread(target=self._recorder.stop, daemon=True).start()
+            event.ignore()  # seguimos vivos hasta que el mux termine
+            self.hide()
+            return
+        # Si hay una transcripción en marcha, avisar que continúa sola: el
+        # subproceso es independiente (su salida va a un archivo, no a un pipe)
+        # y al reabrir la app la reconciliación lo retoma o recoge el resultado.
+        if self._tx_worker.has_active_job():
+            self._dialog(
+                QMessageBox.Information, "Transcripción en curso",
+                "La transcripción continúa en segundo plano aunque cierres la app.\n"
+                "Verás el resultado al volver a abrir el Grabador.",
+            ).exec()
+
+        # Sin grabación: cerrar limpio y asegurar que el proceso termina.
+        from PySide6.QtWidgets import QApplication
+
+        self._stop_monitor()
+        try:
+            self._hotkeys.unregister()
+        except Exception:
+            pass
+        try:
+            self._tray.hide()
+        except Exception:
+            pass
+        super().closeEvent(event)
+        QApplication.quit()
