@@ -161,7 +161,8 @@ grabación, la app la transcribe sola con el proyecto **Transcriptor** (faster-w
 
 > ⚠️ **La transcripción es opcional y depende de un proyecto aparte.** El **Transcriptor**
 > (faster-whisper + pyannote) **no viene incluido en este repositorio**; se instala por
-> separado. Si no lo tienes, la grabación funciona igual: solo no se generará la transcripción.
+> separado desde **<https://github.com/mcjeikk/meeting-transcriber>**. Si no lo tienes, la
+> grabación funciona igual: solo no se generará la transcripción.
 
 - El proyecto **Transcriptor** debe estar instalado con su propio `.venv`, normalmente en
   una carpeta hermana (la ruta se autodetecta; se puede fijar con `transcriptor_dir` en
@@ -221,3 +222,10 @@ app/
 verify_transcription.py  # prueba de humo de la integración (--quick)
 verify_pipeline.py       # prueba end-to-end de la grabación
 ```
+
+---
+
+## 📄 Licencia
+
+[MIT](LICENSE) © 2026 mcjeikk — libre para usar, copiar, modificar y distribuir,
+conservando el aviso de copyright.
