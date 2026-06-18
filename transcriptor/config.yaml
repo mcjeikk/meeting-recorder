@@ -1,0 +1,26 @@
+# ===== Configuración por defecto del Transcriptor =====
+# Cualquier valor de aquí se puede sobreescribir con argumentos de la línea de comandos.
+
+idioma: es                 # código ISO ("es", "en", ...) o "auto" para autodetectar
+modelo: large-v3-turbo     # large-v3-turbo | large-v3 | medium | small | base
+device: auto               # auto = GPU (CUDA) si existe, si no CPU | cuda | cpu
+compute_type: int8         # int8 (recomendado en CPU; con GPU se usa float16 automáticamente)
+cpu_threads: 0             # 0 = usar todos los núcleos disponibles
+beam_size: 5               # 1 = más rápido, 5 = más preciso
+
+vad_filter: true           # saltar silencios (acelera reuniones con pausas)
+
+# --- Diarización (identificación de hablantes) ---
+diarizar: true
+num_speakers: null         # null = autodetectar; o un entero si lo conoces (mejora la calidad)
+min_speakers: null
+max_speakers: null
+
+# --- Salida ---
+formatos: [txt, srt, json] # formatos a generar
+carpeta_salida: output     # relativa a la carpeta del proyecto
+
+# Nombres reales de los hablantes, en orden de aparición (opcional).
+# Ej.: ["Ana", "Carlos"]  ->  primer hablante = Ana, segundo = Carlos
+# Vacío  =>  "Hablante 1", "Hablante 2", ...
+nombres_hablantes: []

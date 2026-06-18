@@ -1,0 +1,44 @@
+# Entornos virtuales
+.venv/
+venv/
+
+# Secretos
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Resultados y temporales
+output/
+*.wav
+
+# Audios de entrada (no versionar), pero conservar la carpeta
+input/*
+!input/.gitkeep
+
+# Más entornos / build
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Audio / video que no debe versionarse
+*.mp3
+*.m4a
+*.mp4
+*.mkv
+*.flac
+*.ogg
+*.opus
+
+# Windows / OneDrive
+Thumbs.db
+desktop.ini
+Desktop.ini
+
+# Editores
+.vscode/
+.idea/
+*.swp
