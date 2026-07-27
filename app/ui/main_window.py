@@ -53,6 +53,11 @@ from app.core.mic_usage import microphone_users
 from app.core.orchestrator import Recorder
 from app.transcription.integration import is_available as transcriptor_disponible
 from app.transcription.jobs import JobStore
+from app.transcription.presets import (
+    PRESET_ORDER,
+    get_preset,
+    normalize_preset,
+)
 from app.transcription.worker import TranscriptionWorker
 from app.ui.hotkeys import GlobalHotkeys
 
@@ -328,10 +333,22 @@ class MainWindow(QMainWindow):
         out_lay.addWidget(self._out_edit, 1)
         out_lay.addWidget(out_btn)
         out_v.addLayout(out_lay)
-        self._tx_check = QCheckBox(
-            "📝 Transcribir al terminar (con hablantes; tarda ~2x la duración en este equipo)"
-        )
+        self._tx_check = QCheckBox("📝 Transcribir al terminar")
         out_v.addWidget(self._tx_check)
+        preset_row = QHBoxLayout()
+        preset_lbl = QLabel("Velocidad / calidad:")
+        preset_lbl.setObjectName("muted")
+        self._tx_preset = QComboBox()
+        for pid in PRESET_ORDER:
+            self._tx_preset.addItem(get_preset(pid).label_es, pid)
+        self._tx_preset.currentIndexChanged.connect(self._on_preset_changed)
+        preset_row.addWidget(preset_lbl)
+        preset_row.addWidget(self._tx_preset, 1)
+        out_v.addLayout(preset_row)
+        self._tx_preset_hint = QLabel("")
+        self._tx_preset_hint.setObjectName("muted")
+        self._tx_preset_hint.setWordWrap(True)
+        out_v.addWidget(self._tx_preset_hint)
         root.addWidget(out_box)
 
         # 5. Botones de grabación
@@ -621,15 +638,41 @@ class MainWindow(QMainWindow):
         disponible = transcriptor_disponible(self._config.transcriptor_dir)
         self._tx_check.setEnabled(disponible)
         self._tx_check.setChecked(self._config.transcribe_after_recording and disponible)
+        self._tx_preset.setEnabled(disponible)
         if not disponible:
-            self._tx_check.setToolTip(
+            tip = (
                 "No se encontró el proyecto Transcriptor.\n"
                 "Revisa 'transcriptor_dir' en %APPDATA%\\MeetingRecorder\\config.json"
             )
+            self._tx_check.setToolTip(tip)
+            self._tx_preset.setToolTip(tip)
+        else:
+            self._tx_check.setToolTip("")
+            self._tx_preset.setToolTip("")
+        self._set_preset_ui(self._config.transcription_preset, save=False)
         if self._config.last_mic_name:
             idx = self._mic_combo.findText(self._config.last_mic_name)
             if idx >= 0:
                 self._mic_combo.setCurrentIndex(idx)
+
+    def _set_preset_ui(self, preset_id: object, *, save: bool) -> None:
+        pid = normalize_preset(preset_id)
+        idx = self._tx_preset.findData(pid)
+        self._tx_preset.blockSignals(True)
+        if idx >= 0:
+            self._tx_preset.setCurrentIndex(idx)
+        self._tx_preset.blockSignals(False)
+        p = get_preset(pid)
+        self._tx_preset_hint.setText(p.hint_es)
+        self._config.transcription_preset = pid
+        if save:
+            self._config.save()
+
+    def _on_preset_changed(self, _index: int = 0) -> None:
+        pid = self._tx_preset.currentData()
+        if pid is None:
+            return
+        self._set_preset_ui(pid, save=True)
 
     # --- vista previa --------------------------------------------------------
     def _update_preview(self) -> None:
@@ -804,6 +847,7 @@ class MainWindow(QMainWindow):
         self._config.reduce_echo = settings.reduce_echo
         self._config.last_mic_name = settings.mic_device.name if settings.mic_device else ""
         self._config.transcribe_after_recording = self._tx_check.isChecked()
+        self._config.transcription_preset = normalize_preset(self._tx_preset.currentData())
         self._config.save()
 
     # --- callbacks del orquestador (vía señales) ----------------------------
@@ -822,7 +866,9 @@ class MainWindow(QMainWindow):
         if self._tx_check.isChecked() and transcriptor_disponible(self._config.transcriptor_dir):
             try:
                 encolada = self._tx_worker.enqueue(
-                    path, self._config.transcription_language
+                    path,
+                    self._config.transcription_language,
+                    preset=normalize_preset(self._config.transcription_preset),
                 ) is not None
             except Exception:
                 pass

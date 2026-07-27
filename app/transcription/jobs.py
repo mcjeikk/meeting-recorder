@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.transcription.integration import transcripts_base
+from app.transcription.presets import DEFAULT_PRESET, get_preset, normalize_preset
 
 # Estados de un trabajo. "running" con PID muerto se resuelve en la
 # reconciliación del worker (done si hay resultado, pending si no).
@@ -29,6 +30,9 @@ DONE = "done"
 ERROR = "error"
 
 _ACTIVE = {PENDING, EXTRACTING, RUNNING}
+
+# Defaults = Equilibrado (jobs antiguos sin campos de preset).
+_EQ = get_preset(DEFAULT_PRESET)
 
 
 def _now() -> str:
@@ -49,7 +53,10 @@ class TranscriptionJob:
     result_dir: str = ""
     note: str = ""          # p. ej. "sin hablantes" si la diarización se degradó
     error: str = ""
-    no_diarize: bool = False  # reintento degradado tras fallo de diarización
+    preset: str = DEFAULT_PRESET
+    model: str = _EQ.model
+    beam_size: int = _EQ.beam_size
+    no_diarize: bool = False  # preset Rápido o reintento degradado tras fallo de diarización
     created_at: str = field(default_factory=_now)
     started_at: str = ""
     finished_at: str = ""
@@ -90,7 +97,18 @@ class JobStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             campos = {k: v for k, v in data.items() if k in TranscriptionJob.__annotations__}
-            return TranscriptionJob(**campos)
+            job = TranscriptionJob(**campos)
+            # Jobs antiguos sin preset → equilibrado (defaults del dataclass).
+            job.preset = normalize_preset(getattr(job, "preset", DEFAULT_PRESET))
+            if "model" not in data or "beam_size" not in data:
+                p = get_preset(job.preset)
+                if "model" not in data:
+                    job.model = p.model
+                if "beam_size" not in data:
+                    job.beam_size = p.beam_size
+                if "no_diarize" not in data:
+                    job.no_diarize = p.no_diarize
+            return job
         except Exception:
             return None  # JSON corrupto/parcial: se ignora, nunca rompe la cola
 
@@ -99,13 +117,31 @@ class JobStore:
         return sorted((j for j in jobs if j), key=lambda j: j.created_at)
 
     # --- operaciones ----------------------------------------------------------
-    def enqueue(self, media_path: str, language: str = "es") -> Optional[TranscriptionJob]:
+    def enqueue(
+        self,
+        media_path: str,
+        language: str = "es",
+        preset: Optional[str] = None,
+    ) -> Optional[TranscriptionJob]:
         """Crea un job pendiente. Devuelve None si ya hay uno activo o terminado
-        para el mismo archivo (dedupe: re-encolar no debe duplicar horas de CPU)."""
+        para el mismo archivo (dedupe: re-encolar no debe duplicar horas de CPU).
+
+        `preset` se captura (snapshot) al encolar; cambios posteriores en la UI
+        no mutan este job.
+        """
         existente = self.find_by_media(media_path)
         if existente and (existente.status in _ACTIVE or existente.status == DONE):
             return None
-        job = TranscriptionJob(media_path=str(media_path), language=language)
+        preset_id = normalize_preset(preset)
+        p = get_preset(preset_id)
+        job = TranscriptionJob(
+            media_path=str(media_path),
+            language=language,
+            preset=preset_id,
+            model=p.model,
+            beam_size=p.beam_size,
+            no_diarize=p.no_diarize,
+        )
         job.log_path = str(self.logs_dir / f"{Path(media_path).stem}_{job.id}.log")
         self.save(job)
         return job

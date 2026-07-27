@@ -94,26 +94,34 @@ class AppConfig:
     capture_system_audio: bool = True
     reduce_echo: bool = False
     last_mic_name: str = ""
-    # --- Transcripción (Fase 2) ---
+    # --- Transcripción ---
     transcribe_after_recording: bool = False
     transcription_language: str = "es"        # código ISO o "auto"
+    transcription_preset: str = "equilibrado"  # rapido|equilibrado|maxima_calidad
     transcriptor_dir: str = field(default_factory=default_transcriptor_dir)
     pause_transcription_while_recording: bool = True  # suspender el proceso al grabar
 
     @classmethod
     def load(cls) -> "AppConfig":
+        from app.transcription.presets import normalize_preset
+
         path = _config_path()
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                return cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
+                cfg = cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
+                cfg.transcription_preset = normalize_preset(cfg.transcription_preset)
+                return cfg
             except Exception:
                 pass  # config corrupta -> usar valores por defecto
         cfg = cls(output_dir=str(default_output_dir()))
         return cfg
 
     def save(self) -> None:
+        from app.transcription.presets import normalize_preset
+
         try:
+            self.transcription_preset = normalize_preset(self.transcription_preset)
             _config_path().write_text(
                 json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8"
             )

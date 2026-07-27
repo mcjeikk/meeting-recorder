@@ -42,6 +42,7 @@ from app.transcription.integration import (
     subprocess_env,
 )
 from app.transcription.jobs import JobStore, TranscriptionJob
+from app.transcription.presets import cli_args_from_job_fields, get_preset
 
 # Patrones de las líneas que imprime transcribe.py en modo TRANSCRIPTOR_PLAIN.
 _RE_ASR_PCT = re.compile(r"transcribiendo\.\.\. (\d+)%")
@@ -115,10 +116,16 @@ class TranscriptionWorker:
         self._thread = threading.Thread(target=self._run, daemon=True, name="transcription-worker")
         self._thread.start()
 
-    def enqueue(self, media_path: str, language: str) -> Optional[dict]:
-        job = self._store.enqueue(media_path, language)
+    def enqueue(
+        self,
+        media_path: str,
+        language: str,
+        preset: Optional[str] = None,
+    ) -> Optional[dict]:
+        job = self._store.enqueue(media_path, language, preset=preset)
         if job:
-            self._emit(job, stage="En cola")
+            label = get_preset(job.preset).label_es
+            self._emit(job, stage=f"En cola ({label})")
             self._wake.set()
             return job.snapshot()
         return None
@@ -126,7 +133,8 @@ class TranscriptionWorker:
     def retry(self, job_id: str) -> None:
         job = self._store.retry(job_id)
         if job:
-            self._emit(job, stage="En cola (reintento)")
+            label = get_preset(job.preset).label_es
+            self._emit(job, stage=f"En cola (reintento · {label})")
             self._wake.set()
 
     def has_active_job(self) -> bool:
@@ -181,9 +189,16 @@ class TranscriptionWorker:
         wav, pista = extract_audio_for_transcription(media, self._store.work_dir / job.id)
         job.work_wav = str(wav)
 
+        # Snapshot del job (no el preset vivo de AppConfig). --no-diarize una sola
+        # vez: preset Rápido o reintento degradado tras fallo de diarización.
         extra = ["--threads", str(cpu_threads_for_job())]
-        if job.no_diarize:
-            extra.append("--no-diarize")
+        extra.extend(
+            cli_args_from_job_fields(
+                model=job.model,
+                beam_size=job.beam_size,
+                no_diarize=bool(job.no_diarize),
+            )
+        )
         cmd = build_command(cfg.transcriptor_dir, wav, job.language, output_dir_for(media), tuple(extra))
 
         # stdout/stderr al archivo de log: el hijo nunca se bloquea por un pipe
