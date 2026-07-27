@@ -94,3 +94,29 @@ Estado de la cola real: `%LOCALAPPDATA%\MeetingRecorder\transcripts\queue\*.json
   imports funcionan (pyvenv.cfg apunta al Python base, que no cambió), pero los
   lanzadores `Scripts\*.exe` (pip.exe, etc.) tienen la ruta vieja embebida —
   usar `python -m pip` en vez de `pip` dentro de ese venv.
+
+<!-- SPEC-KIT:BEGIN (managed by the spec-kit skill — do not edit inside this block) -->
+## Spec-Driven Development (Spec Kit)
+
+This project uses **Spec-Driven Development (SDD)** via [GitHub Spec Kit](https://github.com/github/spec-kit). The spec is the source of truth: intent is captured and agreed *before* code, so implementation is the mechanical step of satisfying an approved spec rather than guesswork.
+
+**Adopt this workflow by default for any non-trivial feature, change, or bugfix** (anything beyond a one-line edit or a quick question). Do not jump straight to code. Drive it through the installed Spec Kit commands, in order:
+
+1. `/speckit.constitution` — establish or update the project's non-negotiable principles (run once per project, revisit when principles change).
+2. `/speckit.specify` — turn the request into a feature spec (the *what* and *why*, no tech choices). Creates `specs/<nnn-feature>/spec.md`.
+3. `/speckit.clarify` — resolve underspecified areas with targeted questions **before** planning. Skip only for throwaway work.
+4. `/speckit.plan` — produce the technical plan and design artifacts (the *how*, tech stack, architecture).
+5. `/speckit.tasks` — generate the dependency-ordered `tasks.md`.
+6. `/speckit.analyze` — cross-check spec ↔ plan ↔ tasks for gaps and inconsistencies (non-destructive).
+7. `/speckit.implement` — execute the tasks to build the feature.
+
+Optional: `/speckit.checklist` (custom quality gates), `/speckit.converge` (reconcile a drifted codebase against the spec), `/speckit.taskstoissues` (export tasks to GitHub issues).
+
+**Rules of engagement**
+- Artifacts live under `specs/`, principles under `.specify/memory/constitution.md`. Treat them as the contract — update the spec when scope changes, then re-plan; never let code silently diverge from the spec.
+- Each phase is a checkpoint: confirm the artifact looks right before advancing. Specs describe behavior and outcomes, not implementation; plans hold the technical choices.
+- If the exact command names differ in this project, the installed ones are the source of truth — list them with `ls .claude/skills` (they are prefixed `speckit`).
+- This workflow augments, and never overrides, the rest of this file or other project rules. When guidance conflicts, the project's own rules win.
+
+To re-run setup, update Spec Kit to the latest version, or check status, invoke the **spec-kit** skill.
+<!-- SPEC-KIT:END -->

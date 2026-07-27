@@ -285,10 +285,13 @@ class MainWindow(QMainWindow):
         mic_row = QHBoxLayout()
         self._mic_combo = QComboBox()
         self._mic_combo.activated.connect(self._on_mic_activated)
+        self._mic_refresh_btn = QPushButton("🔄 Actualizar")
+        self._mic_refresh_btn.clicked.connect(self._on_refresh_mics)
         self._mute_btn = QPushButton("🎤 Activo")
         self._mute_btn.setFixedWidth(130)
         self._mute_btn.clicked.connect(self._toggle_mute)
         mic_row.addWidget(self._mic_combo, 1)
+        mic_row.addWidget(self._mic_refresh_btn)
         mic_row.addWidget(self._mute_btn)
         self._mic_meter = self._make_meter()
         mic_lay.addLayout(mic_row)
@@ -524,6 +527,26 @@ class MainWindow(QMainWindow):
         self._refresh_sources()
         self._update_preview()
 
+    def _on_refresh_mics(self) -> None:
+        self._refresh_mics(manual=True)
+
+    def _mic_selection_key(self) -> str:
+        """Clave visible de identidad para conservar selección (nombre exacto)."""
+        text = self._mic_combo.currentText()
+        return text if text else "Sin micrófono"
+
+    def _restore_mic_selection(self, key: str) -> bool:
+        """Restaura por match exacto de texto. Fallback: «Sin micrófono».
+
+        Returns True si se restauró la clave; False si se aplicó el fallback.
+        """
+        idx = self._mic_combo.findText(key)
+        if idx >= 0:
+            self._mic_combo.setCurrentIndex(idx)
+            return True
+        self._mic_combo.setCurrentIndex(0)  # "Sin micrófono"
+        return False
+
     def _refresh_sources(self) -> None:
         from app.capture.windows_video import list_windows
 
@@ -542,18 +565,54 @@ class MainWindow(QMainWindow):
                 self._source_combo.setCurrentIndex(idx)
         self._source_combo.blockSignals(False)
 
-    def _refresh_mics(self) -> None:
-        from app.capture.windows_audio import list_microphones
+    def _refresh_mics(self, *, manual: bool = False) -> None:
+        """Repuebla el combo de micrófonos.
+
+        En arranque (`manual=False`) no aplica last_mic_name (lo hace
+        `_apply_saved_config`). En refresh manual conserva la selección por
+        nombre exacto y reengancha el medidor si no se está grabando.
+        """
+        had_items = self._mic_combo.count() > 0
+        prev_key = self._mic_selection_key() if had_items else None
 
         self._mic_combo.blockSignals(True)
         self._mic_combo.clear()
         self._mic_combo.addItem("Sin micrófono", userData=None)
-        self._mics = list_microphones()
+        try:
+            from app.capture.windows_audio import list_microphones
+
+            self._mics = list_microphones()
+        except Exception as exc:
+            self._mics = []
+            self._mic_combo.blockSignals(False)
+            if manual:
+                self._status_label.setText(
+                    f"No se pudieron listar micrófonos ({exc})"
+                )
+            return
+
         for m in self._mics:
             self._mic_combo.addItem(m.name, userData=m)
-        if self._mics:
-            self._mic_combo.setCurrentIndex(1)
+
+        if prev_key is None:
+            # Primer populate: preferir el primer mic hardware si existe.
+            if self._mics:
+                self._mic_combo.setCurrentIndex(1)
+            restored = True
+        else:
+            restored = self._restore_mic_selection(prev_key)
+
         self._mic_combo.blockSignals(False)
+
+        if manual:
+            if not restored and prev_key not in (None, "Sin micrófono"):
+                self._status_label.setText(
+                    f"«{prev_key}» ya no disponible — seleccionado Sin micrófono"
+                )
+            else:
+                self._status_label.setText("Micrófonos actualizados")
+            if not self._recorder.is_recording():
+                self._monitor.set_mic(self._mic_combo.currentData())
 
     def _apply_saved_config(self) -> None:
         self._out_edit.setText(self._config.output_dir or str(Path.home()))
@@ -847,9 +906,12 @@ class MainWindow(QMainWindow):
 
     # --- estado de la UI -----------------------------------------------------
     def _set_recording_ui(self, recording: bool) -> None:
-        # El selector de micrófono queda ACTIVO durante la grabación (cambio en vivo).
+        # Fuente de video bloqueada durante grabación; mic + refresh de mics
+        # permanecen activos (cambio/refresh en vivo). C-RECORDING-GATES.
         for w in (self._source_combo, self._refresh_btn, self._sys_check):
             w.setEnabled(not recording)
+        self._mic_combo.setEnabled(True)
+        self._mic_refresh_btn.setEnabled(True)
         self._pause_btn.setVisible(recording)
         self._pause_btn.setEnabled(recording)
         self._rec_dot.setVisible(recording)

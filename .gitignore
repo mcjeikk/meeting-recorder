@@ -46,3 +46,4 @@ $RECYCLE.BIN/
 .idea/
 *.swp
 *~
+.specify-backups/
