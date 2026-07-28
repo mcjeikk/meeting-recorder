@@ -68,6 +68,69 @@ def list_windows() -> List[VideoSource]:
     return results
 
 
+def list_monitors() -> List[VideoSource]:
+    """Lista monitores en el mismo orden 1-based que windows-capture / WGC.
+
+    Usa EnumDisplayMonitors (como la librería Rust subyacente). Cada entrada es
+    un VideoSource kind=screen con monitor_index listo para WindowsCapture.
+    """
+    if sys.platform != "win32":
+        return [VideoSource(kind="screen", title="Pantalla 1", monitor_index=1, is_primary=True)]
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    MONITORINFOF_PRIMARY = 1
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
+
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", RECT),
+            ("rcWork", RECT),
+            ("dwFlags", wintypes.DWORD),
+            ("szDevice", wintypes.WCHAR * 32),
+        ]
+
+    results: List[VideoSource] = []
+    MonitorEnumProc = ctypes.WINFUNCTYPE(
+        ctypes.c_int, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(RECT), wintypes.LPARAM
+    )
+
+    def _callback(hmon, _hdc, _lprc, _lparam):
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        if not user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            return 1
+        idx = len(results) + 1
+        primary = bool(info.dwFlags & MONITORINFOF_PRIMARY)
+        w = abs(info.rcMonitor.right - info.rcMonitor.left)
+        h = abs(info.rcMonitor.bottom - info.rcMonitor.top)
+        device = (info.szDevice or "").strip() or f"DISPLAY{idx}"
+        results.append(
+            VideoSource(
+                kind="screen",
+                title=f"{device} {w}x{h}",
+                monitor_index=idx,
+                is_primary=primary,
+            )
+        )
+        return 1
+
+    ok = user32.EnumDisplayMonitors(None, None, MonitorEnumProc(_callback), 0)
+    if not ok or not results:
+        return [VideoSource(kind="screen", title="Pantalla 1", monitor_index=1, is_primary=True)]
+    return results
+
+
 def _encoder_args(encoder: str, fps: int) -> List[str]:
     """Argumentos de codificación según el encoder elegido."""
     # -g = intervalo de keyframes (2 segundos): bueno para edición/seek.
@@ -186,15 +249,15 @@ class WindowsGraphicsCapture(VideoCapture):
                 window_hwnd=int(self._source.hwnd),
             )
         else:
-            # Pantalla completa: monitor principal. minimum_update_interval
-            # limita los callbacks (el compositor puede ir a 60-165 Hz y cada
-            # callback copia el frame entero). Se permite hasta 2x fps para que
-            # el hilo escritor (que muestrea a fps) casi nunca repita frame;
-            # con pantalla estática WGC no emite callbacks, así que no hay costo.
+            # Pantalla completa: monitor elegido (1-based, orden EnumDisplayMonitors).
+            # minimum_update_interval limita callbacks (compositor 60-165 Hz).
+            mon = int(self._source.monitor_index or 1)
+            if mon < 1:
+                mon = 1
             self._cap = WindowsCapture(
                 cursor_capture=True,
                 draw_border=False,
-                monitor_index=1,
+                monitor_index=mon,
                 minimum_update_interval=max(1, int(1000 / (self._fps * 2))),
             )
 

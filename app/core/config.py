@@ -51,12 +51,20 @@ def default_transcriptor_dir() -> str:
 class VideoSource:
     """Describe QUÉ se va a grabar en video."""
     kind: str                 # "screen" (pantalla completa) | "window" (una ventana)
-    title: str = ""           # título de la ventana (si kind == "window")
+    title: str = ""           # título de la ventana (si kind == "window") o etiqueta de monitor
     hwnd: Optional[int] = None  # handle de ventana en Windows (opcional)
+    monitor_index: Optional[int] = None  # 1-based WGC index (si kind == "screen")
+    is_primary: bool = False
 
     @property
     def label(self) -> str:
-        return "Pantalla completa" if self.kind == "screen" else f"Ventana: {self.title}"
+        if self.kind == "screen":
+            n = self.monitor_index or 1
+            base = f"Pantalla {n}"
+            if self.is_primary:
+                base += " (principal)"
+            return base
+        return f"Ventana: {self.title}"
 
 
 @dataclass

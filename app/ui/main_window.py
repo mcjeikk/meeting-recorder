@@ -630,21 +630,36 @@ class MainWindow(QMainWindow):
         return False
 
     def _refresh_sources(self) -> None:
-        from app.capture.windows_video import list_windows
+        from app.capture.windows_video import list_monitors, list_windows
 
         prev = self._source_combo.currentData()
         self._source_combo.blockSignals(True)
         self._source_combo.clear()
-        self._source_combo.addItem("🖥️  Pantalla completa", userData=None)
+        monitors = list_monitors() if sys.platform == "win32" else [
+            VideoSource(kind="screen", title="Pantalla 1", monitor_index=1, is_primary=True)
+        ]
+        for m in monitors:
+            self._source_combo.addItem(f"🖥️  {m.label}", userData=m)
         if sys.platform == "win32":
             self._windows = list_windows()
             for w in self._windows:
                 self._source_combo.addItem(f"🪟  {w.title}", userData=w)
-        # intentar conservar la selección previa
+        # Conservar selección: monitor por índice; ventana por título.
         if isinstance(prev, VideoSource):
-            idx = self._source_combo.findText(f"🪟  {prev.title}")
-            if idx >= 0:
-                self._source_combo.setCurrentIndex(idx)
+            if prev.kind == "screen" and prev.monitor_index:
+                for i in range(self._source_combo.count()):
+                    data = self._source_combo.itemData(i)
+                    if (
+                        isinstance(data, VideoSource)
+                        and data.kind == "screen"
+                        and data.monitor_index == prev.monitor_index
+                    ):
+                        self._source_combo.setCurrentIndex(i)
+                        break
+            elif prev.kind == "window" and prev.title:
+                idx = self._source_combo.findText(f"🪟  {prev.title}")
+                if idx >= 0:
+                    self._source_combo.setCurrentIndex(idx)
         self._source_combo.blockSignals(False)
 
     def _refresh_mics(self, *, manual: bool = False, auto: bool = False) -> None:
@@ -804,10 +819,23 @@ class MainWindow(QMainWindow):
                     self._set_preview_pixmap(self._bgra_to_pixmap(frame))
                 return
 
-            # PANTALLA COMPLETA -> capturar el escritorio compuesto (sí funciona).
+            # PANTALLA -> grab del QScreen que mejor coincida con el monitor elegido.
+            from PySide6.QtGui import QGuiApplication
             from PySide6.QtWidgets import QApplication
 
-            screen = QApplication.primaryScreen()
+            screen = None
+            mon_idx = None
+            if isinstance(source, VideoSource) and source.kind == "screen":
+                mon_idx = source.monitor_index
+            screens = QGuiApplication.screens()
+            if mon_idx and screens:
+                # Emparejar por orden ordinal (mejor esfuerzo); Qt no usa el
+                # mismo índice WGC, pero en la práctica suele alinear.
+                i = max(0, int(mon_idx) - 1)
+                if i < len(screens):
+                    screen = screens[i]
+            if screen is None:
+                screen = QApplication.primaryScreen()
             if screen is None:
                 return
             pm = screen.grabWindow(0)
@@ -838,8 +866,8 @@ class MainWindow(QMainWindow):
 
     def _build_settings(self) -> RecordingSettings:
         source = self._source_combo.currentData()
-        if source is None:
-            source = VideoSource(kind="screen")
+        if not isinstance(source, VideoSource):
+            source = VideoSource(kind="screen", monitor_index=1, is_primary=True)
         return RecordingSettings(
             video_source=source,
             mic_device=self._mic_combo.currentData(),

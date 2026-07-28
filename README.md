@@ -66,7 +66,8 @@ python -m app.main
 
 Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
 
-1. **¿Qué quieres grabar?** → elige una **ventana** de la lista o **"Pantalla completa"**.
+1. **¿Qué quieres grabar?** → elige una **ventana** de la lista o una **pantalla**
+   (si tienes varios monitores, cada uno aparece como «Pantalla N»).
    Verás una **vista previa** (miniatura) de lo que se grabará. Usa **🔄 Actualizar**
    para refrescar la lista de ventanas abiertas.
 2. **Micrófono** → elige tu micrófono. El medidor muestra el nivel **en vivo,
