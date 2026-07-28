@@ -127,3 +127,5 @@ app/
 **Rejected**: fuse torch into Recorder venv; Windows Scheduled Task mega-worker.
 
 **Measurement (when Phase 2 is implemented)**: same short sample, same preset, two consecutive jobs — compare wall-clock from process start to first ASR progress (cold vs warm). Confirm Recording Always Wins still suspends/yields the sibling child.
+
+> **2026-07-28 update**: Phase 2 code remains deferred. Refined decision and backlog unlock live in [`specs/005-model-load-reuse/`](../005-model-load-reuse/deferral.md) (docs only; no daemon this pass).
