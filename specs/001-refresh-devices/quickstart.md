@@ -30,6 +30,14 @@ cd "C:\Users\jeissonsegura\OneDrive - Periferia IT Corp SAS\Documentos\Proyectos
 3. Pulsar **Actualizar** en Micrófono (no el de fuentes).
 4. **Esperado**: el mic nuevo aparece en &lt; 3 s; se puede seleccionar; el medidor reacciona al hablar (idle).
 
+### Q1b — Bluetooth (Hands-Free vs Stereo) — fix PortAudio cache (R8)
+
+1. App abierta **sin grabar**; conectar auriculares BT y esperar a que Windows muestre el micrófono (perfil Hands-Free / “Cascos con micrófono”).
+2. Pulsar **Actualizar** en Micrófono.
+3. **Esperado**: aparece un endpoint con entrada (a menudo nombre *Hands-Free* / *Headset*); estado “N micrófonos encontrados” si es nuevo.
+4. Si solo existe *Stereo* / A2DP (solo salida), el mic **no** debe inventarse — mensaje de “sin cambios… Hands-Free”.
+5. Durante grabación: Actualizar **no** reinicia PortAudio; un BT recién emparejado puede no listarse hasta detener y refrescar en idle.
+
 ### Q2 — Conservar selección sin cambio de hardware (P2 / FR-003)
 
 1. Elegir un micrófono que **no** sea el primero de la lista.

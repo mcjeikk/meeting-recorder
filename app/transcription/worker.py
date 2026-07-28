@@ -137,6 +137,24 @@ class TranscriptionWorker:
             self._emit(job, stage=f"En cola (reintento · {label})")
             self._wake.set()
 
+    def cancel(self, job_id: str) -> bool:
+        """Cancela un job activo/pendiente y mata el CLI hijo si esta instancia lo posee."""
+        current = self._current
+        pid = None
+        if current and current.id == job_id:
+            pid = current.pid
+        job = self._store.cancel(job_id)
+        if not job:
+            return False
+        if pid:
+            self._terminate_pid(pid)
+        self._emit(job, stage="Cancelada")
+        self._wake.set()
+        return True
+
+    def clear_failed(self) -> int:
+        return self._store.clear_failed()
+
     def has_active_job(self) -> bool:
         return self._current is not None
 
@@ -144,6 +162,21 @@ class TranscriptionWorker:
         """No mata el subproceso (es independiente); solo detiene el hilo."""
         self._stop = True
         self._wake.set()
+
+    @staticmethod
+    def _terminate_pid(pid: int) -> None:
+        try:
+            proc = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except psutil.TimeoutExpired:
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
     # --- bucle principal (hilo propio) ---------------------------------------------
     def _run(self) -> None:
@@ -172,6 +205,8 @@ class TranscriptionWorker:
 
     # --- ejecución de un trabajo ----------------------------------------------------
     def _execute(self, job: TranscriptionJob) -> None:
+        if self._job_cancelled(job.id):
+            return
         cfg = self._get_config()
         if not is_available(cfg.transcriptor_dir):
             self._fail(job, "No se encontró el proyecto Transcriptor (revisa transcriptor_dir)", retry=False)
@@ -186,8 +221,15 @@ class TranscriptionWorker:
         self._store.save(job)
         self._emit(job, stage="Preparando audio…")
 
+        if self._job_cancelled(job.id):
+            return
+
         wav, pista = extract_audio_for_transcription(media, self._store.work_dir / job.id)
         job.work_wav = str(wav)
+
+        if self._job_cancelled(job.id):
+            self._cleanup_wav(job)
+            return
 
         # Snapshot del job (no el preset vivo de AppConfig). --no-diarize una sola
         # vez: preset Rápido o reintento degradado tras fallo de diarización.
@@ -219,6 +261,15 @@ class TranscriptionWorker:
         finally:
             log.close()
 
+        if self._job_cancelled(job.id):
+            self._terminate_pid(proc.pid)
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+            self._cleanup_wav(job)
+            return
+
         job.status = J.RUNNING
         job.pid = proc.pid
         self._store.save(job)
@@ -226,6 +277,11 @@ class TranscriptionWorker:
 
         rc = self._monitor(job, psutil.Process(proc.pid), owned=proc)
         self._settle(job, rc)
+
+    def _job_cancelled(self, job_id: str) -> bool:
+        path = self._store._path(job_id)
+        job = self._store._load(path)
+        return bool(job and job.status == J.CANCELLED)
 
     def _monitor(self, job: TranscriptionJob, proc: psutil.Process, owned: Optional[subprocess.Popen] = None) -> Optional[int]:
         """Vigila el proceso: progreso desde el log, pausa al grabar, anti-suspensión.
@@ -306,6 +362,16 @@ class TranscriptionWorker:
     # --- resolución -----------------------------------------------------------------
     def _settle(self, job: TranscriptionJob, rc: Optional[int]) -> None:
         """Decide done/error por exit code + archivos (nunca solo por el log)."""
+        if self._job_cancelled(job.id):
+            job.status = J.CANCELLED
+            job.error = job.error or "Cancelado por el usuario"
+            job.finished_at = job.finished_at or J._now()
+            job.pid = None
+            self._store.save(job)
+            self._cleanup_wav(job)
+            self._emit(job, stage="Cancelada")
+            return
+
         resultado = result_dir_for(Path(job.media_path))
         txt = resultado / "transcripcion.txt"
         exito = (rc in (0, None)) and txt.exists()

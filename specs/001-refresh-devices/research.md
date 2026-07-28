@@ -70,6 +70,19 @@
 
 **Rationale**: El código ya conserva ventana seleccionada y pantalla completa (`userData=None` permanece índice 0 si `prev` no es `VideoSource`).
 
+## R8 — PortAudio cache: micrófonos nuevos (Bluetooth/USB) no aparecen al Actualizar
+
+**Decision** (fix 2026-07-28): En refresh **manual idle**, llamar `list_microphones(refresh=True)` que hace `sounddevice._terminate()` + `_initialize()` **después** de cerrar el stream del `AudioMonitor` (`set_mic(None)`). Luego repoblar y reenganchar el medidor. Durante **grabación**, solo `list_microphones()` sin reinicio + mensaje de estado (Recording Always Wins: no cortar captura/keepalive sounddevice).
+
+**Root cause**: PortAudio congela la lista de dispositivos en `Pa_Initialize()`. `query_devices()` repetido **sin** reinicio no ve hotplug — comportamiento documentado ([sounddevice#125](https://github.com/spatialaudio/python-sounddevice/issues/125), [#343](https://github.com/spatialaudio/python-sounddevice/issues/343)). El botón Actualizar de 001 solo re-consultaba la lista cacheada.
+
+**Alternatives considered**:
+- `Pa_RefreshDeviceList` / hotplug fork — no expuesto por el PortAudio embebido en sounddevice en Windows estable.
+- Subproceso corto solo para enumerar — posible pero más complejo (Principio V); reinicio in-process idle basta.
+- Reiniciar también mid-recording — rechazado: cortaría `MicCapture` y el keepalive de loopback.
+
+**Nota Bluetooth**: en Windows el micrófono suele vivir en el endpoint **Hands-Free (HFP)** (`max_input_channels > 0`). El perfil **Stereo (A2DP)** es solo salida y se filtra a propósito. Si Windows aún no expuso HFP, Actualizar (incluso con reinicio) no inventa el dispositivo.
+
 ## Open questions
 
 Ninguna. Clarificaciones del spec (manual-only, nombre como identidad, hot-swap reutilizado) son suficientes para diseño e implementación.

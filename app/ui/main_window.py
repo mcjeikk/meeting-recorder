@@ -52,7 +52,7 @@ from app.core.config import AppConfig, AudioDevice, RecordingSettings, VideoSour
 from app.core.mic_usage import microphone_users
 from app.core.orchestrator import Recorder
 from app.transcription.integration import is_available as transcriptor_disponible
-from app.transcription.jobs import JobStore
+from app.transcription.jobs import JobStore, normalize_language
 from app.transcription.presets import (
     PRESET_ORDER,
     get_preset,
@@ -349,6 +349,16 @@ class MainWindow(QMainWindow):
         self._tx_preset_hint.setObjectName("muted")
         self._tx_preset_hint.setWordWrap(True)
         out_v.addWidget(self._tx_preset_hint)
+        lang_row = QHBoxLayout()
+        lang_lbl = QLabel("Idioma:")
+        lang_lbl.setObjectName("muted")
+        self._tx_lang = QComboBox()
+        for label, code in (("Español", "es"), ("English", "en"), ("Auto", "auto")):
+            self._tx_lang.addItem(label, code)
+        self._tx_lang.currentIndexChanged.connect(self._on_language_changed)
+        lang_row.addWidget(lang_lbl)
+        lang_row.addWidget(self._tx_lang, 1)
+        out_v.addLayout(lang_row)
         root.addWidget(out_box)
 
         # 5. Botones de grabación
@@ -425,8 +435,12 @@ class MainWindow(QMainWindow):
         self._tx_open_btn = QPushButton("📄 Abrir transcripción")
         self._tx_open_btn.setCursor(Qt.PointingHandCursor)
         self._tx_open_btn.clicked.connect(self._open_transcription)
+        self._tx_cancel_btn = QPushButton("Cancelar")
+        self._tx_cancel_btn.clicked.connect(self._cancel_transcription)
         self._tx_retry_btn = QPushButton("Reintentar")
         self._tx_retry_btn.clicked.connect(self._retry_transcription)
+        self._tx_clear_btn = QPushButton("Limpiar fallidos")
+        self._tx_clear_btn.clicked.connect(self._clear_failed_transcriptions)
         self._tx_log_btn = QPushButton("Ver log")
         self._tx_log_btn.clicked.connect(self._open_tx_log)
         tx_close = QPushButton("✕")
@@ -435,7 +449,9 @@ class MainWindow(QMainWindow):
         tx_close.clicked.connect(lambda: self._tx_banner.setVisible(False))
         txl.addLayout(tx_col, 1)
         txl.addWidget(self._tx_open_btn)
+        txl.addWidget(self._tx_cancel_btn)
         txl.addWidget(self._tx_retry_btn)
+        txl.addWidget(self._tx_clear_btn)
         txl.addWidget(self._tx_log_btn)
         txl.addWidget(tx_close)
         self._tx_banner.setVisible(False)
@@ -588,9 +604,20 @@ class MainWindow(QMainWindow):
         En arranque (`manual=False`) no aplica last_mic_name (lo hace
         `_apply_saved_config`). En refresh manual conserva la selección por
         nombre exacto y reengancha el medidor si no se está grabando.
+
+        Fuera de grabación reinicia PortAudio (vía ``list_microphones(refresh=True)``)
+        para que micrófonos Bluetooth/USB recién conectados aparezcan. Durante
+        grabación solo consulta la lista cacheada (Recording Always Wins).
         """
         had_items = self._mic_combo.count() > 0
         prev_key = self._mic_selection_key() if had_items else None
+        prev_names = {m.name for m in (self._mics or [])}
+
+        recording = self._recorder.is_recording()
+        # Re-init PortAudio solo idle: corta streams sounddevice (medidor / captura).
+        do_reinit = bool(manual and not recording)
+        if do_reinit and self._monitor.is_running():
+            self._monitor.set_mic(None)
 
         self._mic_combo.blockSignals(True)
         self._mic_combo.clear()
@@ -598,7 +625,7 @@ class MainWindow(QMainWindow):
         try:
             from app.capture.windows_audio import list_microphones
 
-            self._mics = list_microphones()
+            self._mics = list_microphones(refresh=do_reinit)
         except Exception as exc:
             self._mics = []
             self._mic_combo.blockSignals(False)
@@ -606,6 +633,8 @@ class MainWindow(QMainWindow):
                 self._status_label.setText(
                     f"No se pudieron listar micrófonos ({exc})"
                 )
+            if do_reinit and self._monitor.is_running():
+                self._monitor.set_mic(None)
             return
 
         for m in self._mics:
@@ -622,13 +651,26 @@ class MainWindow(QMainWindow):
         self._mic_combo.blockSignals(False)
 
         if manual:
+            n = len(self._mics)
+            new_names = {m.name for m in self._mics}
+            added = new_names - prev_names
             if not restored and prev_key not in (None, "Sin micrófono"):
                 self._status_label.setText(
                     f"«{prev_key}» ya no disponible — seleccionado Sin micrófono"
                 )
+            elif added:
+                self._status_label.setText(f"{n} micrófonos encontrados")
+            elif recording:
+                self._status_label.setText(
+                    f"{n} micrófonos — sin cambios. Bluetooth nuevo: detén la "
+                    "grabación y pulsa Actualizar"
+                )
             else:
-                self._status_label.setText("Micrófonos actualizados")
-            if not self._recorder.is_recording():
+                self._status_label.setText(
+                    f"{n} micrófonos encontrados — sin cambios. Si es Bluetooth, "
+                    "espera el perfil Hands-Free (no solo Stereo)"
+                )
+            if not recording and self._monitor.is_running():
                 self._monitor.set_mic(self._mic_combo.currentData())
 
     def _apply_saved_config(self) -> None:
@@ -639,6 +681,7 @@ class MainWindow(QMainWindow):
         self._tx_check.setEnabled(disponible)
         self._tx_check.setChecked(self._config.transcribe_after_recording and disponible)
         self._tx_preset.setEnabled(disponible)
+        self._tx_lang.setEnabled(disponible)
         if not disponible:
             tip = (
                 "No se encontró el proyecto Transcriptor.\n"
@@ -646,10 +689,13 @@ class MainWindow(QMainWindow):
             )
             self._tx_check.setToolTip(tip)
             self._tx_preset.setToolTip(tip)
+            self._tx_lang.setToolTip(tip)
         else:
             self._tx_check.setToolTip("")
             self._tx_preset.setToolTip("")
+            self._tx_lang.setToolTip("")
         self._set_preset_ui(self._config.transcription_preset, save=False)
+        self._set_language_ui(self._config.transcription_language, save=False)
         if self._config.last_mic_name:
             idx = self._mic_combo.findText(self._config.last_mic_name)
             if idx >= 0:
@@ -673,6 +719,23 @@ class MainWindow(QMainWindow):
         if pid is None:
             return
         self._set_preset_ui(pid, save=True)
+
+    def _set_language_ui(self, language: object, *, save: bool) -> None:
+        code = normalize_language(language)
+        idx = self._tx_lang.findData(code)
+        self._tx_lang.blockSignals(True)
+        if idx >= 0:
+            self._tx_lang.setCurrentIndex(idx)
+        self._tx_lang.blockSignals(False)
+        self._config.transcription_language = code
+        if save:
+            self._config.save()
+
+    def _on_language_changed(self, _index: int = 0) -> None:
+        code = self._tx_lang.currentData()
+        if code is None:
+            return
+        self._set_language_ui(code, save=True)
 
     # --- vista previa --------------------------------------------------------
     def _update_preview(self) -> None:
@@ -848,6 +911,7 @@ class MainWindow(QMainWindow):
         self._config.last_mic_name = settings.mic_device.name if settings.mic_device else ""
         self._config.transcribe_after_recording = self._tx_check.isChecked()
         self._config.transcription_preset = normalize_preset(self._tx_preset.currentData())
+        self._config.transcription_language = normalize_language(self._tx_lang.currentData())
         self._config.save()
 
     # --- callbacks del orquestador (vía señales) ----------------------------
@@ -867,7 +931,7 @@ class MainWindow(QMainWindow):
             try:
                 encolada = self._tx_worker.enqueue(
                     path,
-                    self._config.transcription_language,
+                    normalize_language(self._config.transcription_language),
                     preset=normalize_preset(self._config.transcription_preset),
                 ) is not None
             except Exception:
@@ -906,10 +970,15 @@ class MainWindow(QMainWindow):
 
         es_done = estado == "done"
         es_error = estado == "error"
+        es_cancelado = estado == "cancelled"
+        es_activo = estado in ("pending", "extracting", "running")
+        hay_fallidos = self._tx_store.count_clearable() > 0
         self._tx_open_btn.setVisible(es_done)
+        self._tx_cancel_btn.setVisible(es_activo)
         self._tx_retry_btn.setVisible(es_error)
-        self._tx_log_btn.setVisible(es_error)
-        self._tx_bar.setVisible(not es_done and not es_error)
+        self._tx_clear_btn.setVisible(hay_fallidos or es_error or es_cancelado)
+        self._tx_log_btn.setVisible(es_error or es_cancelado)
+        self._tx_bar.setVisible(es_activo)
         self._tx_banner.setVisible(True)
 
         if es_done:
@@ -918,6 +987,8 @@ class MainWindow(QMainWindow):
             if self._tray.isVisible() and not self.isActiveWindow():
                 self._tray.showMessage("Transcripción lista", nombre,
                                        QSystemTrayIcon.Information, 5000)
+        elif es_cancelado:
+            self._tx_label.setText(f"⛔ Transcripción cancelada:  {nombre}")
         elif es_error:
             detalle = (snap.get("error") or "")[:140]
             self._tx_label.setText(f"⚠ Transcripción falló:  {nombre}\n{detalle}")
@@ -949,6 +1020,20 @@ class MainWindow(QMainWindow):
         job_id = self._tx_last.get("id")
         if job_id:
             self._tx_worker.retry(job_id)
+
+    def _cancel_transcription(self) -> None:
+        job_id = self._tx_last.get("id")
+        if job_id:
+            self._tx_worker.cancel(job_id)
+
+    def _clear_failed_transcriptions(self) -> None:
+        n = self._tx_worker.clear_failed()
+        if n and self._tx_last.get("status") in ("error", "cancelled"):
+            self._tx_banner.setVisible(False)
+            self._tx_last = {}
+        elif self._tx_last:
+            # Refrescar visibilidad del botón Limpiar
+            self._on_tx_update(self._tx_last)
 
     # --- estado de la UI -----------------------------------------------------
     def _set_recording_ui(self, recording: bool) -> None:

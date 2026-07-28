@@ -33,17 +33,45 @@ def _rms_level(samples_int16: np.ndarray) -> float:
     return min(1.0, rms * 3.0)  # ligera compresión para que el medidor se vea mejor
 
 
-def list_microphones() -> List[AudioDevice]:
+def reinitialize_portaudio() -> None:
+    """Fuerza a PortAudio a re-escanear dispositivos (hotplug).
+
+    sounddevice/PortAudio congela la lista en ``Pa_Initialize()``. Un micrófono
+    Bluetooth/USB conectado después del arranque NO aparece en ``query_devices()``
+    hasta ``_terminate()`` + ``_initialize()``.
+
+    El llamador DEBE cerrar antes cualquier ``InputStream``/``OutputStream`` de
+    sounddevice; si no, PortAudio corta esos flujos.
+    """
+    import sounddevice as sd
+
+    sd._terminate()
+    sd._initialize()
+
+
+def list_microphones(*, refresh: bool = False) -> List[AudioDevice]:
     """Lista los micrófonos disponibles (solo WASAPI: lista limpia y sin duplicados).
 
     Filtramos al host API WASAPI porque (a) evita los duplicados MME/DirectSound y
     (b) es la ruta moderna y fiable en Windows. Cada dispositivo se grabará en su
     formato NATIVO (algunos auriculares Bluetooth solo dan 16 kHz mono).
+
+    Con ``refresh=True`` reinicia PortAudio para ver dispositivos recién conectados.
+    Solo usar cuando no hay streams sounddevice abiertos (p. ej. medidor detenido,
+    sin grabación activa). Los endpoints solo-salida (A2DP Stereo) tienen
+    ``max_input_channels == 0`` y se omiten a propósito — el mic BT suele vivir
+    en el perfil Hands-Free (HFP).
     """
     try:
         import sounddevice as sd
     except Exception:
         return []
+
+    if refresh:
+        try:
+            reinitialize_portaudio()
+        except Exception:
+            pass  # best-effort: seguir con la lista cacheada si el reinicio falla
 
     hostapis = sd.query_hostapis()
     wasapi_idx = next((i for i, h in enumerate(hostapis) if "WASAPI" in h["name"]), None)

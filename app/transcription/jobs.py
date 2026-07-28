@@ -28,8 +28,13 @@ EXTRACTING = "extracting"
 RUNNING = "running"
 DONE = "done"
 ERROR = "error"
+CANCELLED = "cancelled"
 
 _ACTIVE = {PENDING, EXTRACTING, RUNNING}
+_CLEARABLE = {ERROR, CANCELLED}
+
+DEFAULT_LANGUAGE = "es"
+_ALLOWED_LANGUAGES = frozenset({"es", "en", "auto"})
 
 # Defaults = Equilibrado (jobs antiguos sin campos de preset).
 _EQ = get_preset(DEFAULT_PRESET)
@@ -37,6 +42,14 @@ _EQ = get_preset(DEFAULT_PRESET)
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def normalize_language(value: object) -> str:
+    """es|en|auto; desconocido → es (default del producto)."""
+    if value is None:
+        return DEFAULT_LANGUAGE
+    code = str(value).strip().casefold()
+    return code if code in _ALLOWED_LANGUAGES else DEFAULT_LANGUAGE
 
 
 @dataclass
@@ -136,7 +149,7 @@ class JobStore:
         p = get_preset(preset_id)
         job = TranscriptionJob(
             media_path=str(media_path),
-            language=language,
+            language=normalize_language(language),
             preset=preset_id,
             model=p.model,
             beam_size=p.beam_size,
@@ -169,3 +182,32 @@ class JobStore:
         job.pid = None
         self.save(job)
         return job
+
+    def cancel(self, job_id: str) -> Optional[TranscriptionJob]:
+        """Marca pending/extracting/running como cancelled. No toca done/error."""
+        job = self._load(self._path(job_id))
+        if not job or job.status not in _ACTIVE:
+            return None
+        job.status = CANCELLED
+        job.error = "Cancelado por el usuario"
+        job.finished_at = _now()
+        job.pid = None
+        self.save(job)
+        return job
+
+    def clear_failed(self) -> int:
+        """Borra jobs en error o cancelled. Devuelve cuántos eliminó."""
+        n = 0
+        for job in self.all():
+            if job.status not in _CLEARABLE:
+                continue
+            path = self._path(job.id)
+            try:
+                path.unlink(missing_ok=True)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    def count_clearable(self) -> int:
+        return sum(1 for j in self.all() if j.status in _CLEARABLE)

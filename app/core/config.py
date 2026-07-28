@@ -103,6 +103,7 @@ class AppConfig:
 
     @classmethod
     def load(cls) -> "AppConfig":
+        from app.transcription.jobs import normalize_language
         from app.transcription.presets import normalize_preset
 
         path = _config_path()
@@ -111,6 +112,7 @@ class AppConfig:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 cfg = cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
                 cfg.transcription_preset = normalize_preset(cfg.transcription_preset)
+                cfg.transcription_language = normalize_language(cfg.transcription_language)
                 return cfg
             except Exception:
                 pass  # config corrupta -> usar valores por defecto
@@ -118,10 +120,12 @@ class AppConfig:
         return cfg
 
     def save(self) -> None:
+        from app.transcription.jobs import normalize_language
         from app.transcription.presets import normalize_preset
 
         try:
             self.transcription_preset = normalize_preset(self.transcription_preset)
+            self.transcription_language = normalize_language(self.transcription_language)
             _config_path().write_text(
                 json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8"
             )
