@@ -53,6 +53,7 @@ from app.core.mic_usage import microphone_users
 from app.core.orchestrator import Recorder
 from app.transcription.integration import is_available as transcriptor_disponible
 from app.transcription.jobs import JobStore, normalize_language
+from app.ui.device_watcher import DeviceChangeWatcher, hotplug_action
 from app.transcription.presets import (
     PRESET_ORDER,
     get_preset,
@@ -168,6 +169,15 @@ class MainWindow(QMainWindow):
         self._hotkeys_registered = False
         self._own_hint = os.path.basename(sys.executable)  # para excluirnos en la detección
         self._monitor = AudioMonitor()  # medidores en vivo cuando NO se graba
+        self._pending_mic_hotplug_refresh = False
+        self._hotplug_debounce = QTimer(self)
+        self._hotplug_debounce.setSingleShot(True)
+        self._hotplug_debounce.setInterval(800)
+        self._hotplug_debounce.timeout.connect(self._on_hotplug_debounce)
+        self._hotplug_followup = QTimer(self)
+        self._hotplug_followup.setSingleShot(True)
+        self._hotplug_followup.setInterval(2000)
+        self._hotplug_followup.timeout.connect(self._on_hotplug_followup)
 
         self._recorder = Recorder(
             on_status=self._status_sig.emit,
@@ -198,6 +208,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._setup_tray()
         self._setup_hotkeys()
+        self._setup_device_watcher()
         self._refresh_sources()
         self._refresh_mics()
         self._apply_saved_config()
@@ -509,6 +520,44 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _setup_device_watcher(self) -> None:
+        """Auto-refresh de mics ante hotplug Windows (debounce en MainWindow)."""
+        self._device_watcher = DeviceChangeWatcher(self._on_device_change_event)
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.instance().installNativeEventFilter(self._device_watcher)
+        except Exception:
+            pass
+
+    def _on_device_change_event(self) -> None:
+        # Reinicia debounce: ráfagas PnP → un solo refresh.
+        self._hotplug_debounce.start()
+
+    def _on_hotplug_debounce(self) -> None:
+        recording = self._recorder.is_recording()
+        if hotplug_action(recording=recording) == "defer":
+            self._pending_mic_hotplug_refresh = True
+            return
+        self._refresh_mics(auto=True)
+        # Segundo pase corto: BT a menudo publica HFP después del primer evento.
+        self._hotplug_followup.start()
+
+    def _on_hotplug_followup(self) -> None:
+        if self._recorder.is_recording():
+            self._pending_mic_hotplug_refresh = True
+            return
+        self._refresh_mics(auto=True)
+
+    def _flush_pending_mic_hotplug(self) -> None:
+        if not self._pending_mic_hotplug_refresh:
+            return
+        if self._recorder.is_recording():
+            return
+        self._pending_mic_hotplug_refresh = False
+        self._refresh_mics(auto=True)
+        self._hotplug_followup.start()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._hotkeys_registered:
@@ -598,24 +647,25 @@ class MainWindow(QMainWindow):
                 self._source_combo.setCurrentIndex(idx)
         self._source_combo.blockSignals(False)
 
-    def _refresh_mics(self, *, manual: bool = False) -> None:
+    def _refresh_mics(self, *, manual: bool = False, auto: bool = False) -> None:
         """Repuebla el combo de micrófonos.
 
-        En arranque (`manual=False`) no aplica last_mic_name (lo hace
-        `_apply_saved_config`). En refresh manual conserva la selección por
-        nombre exacto y reengancha el medidor si no se está grabando.
+        En arranque (`manual=False`, `auto=False`) no aplica last_mic_name (lo
+        hace `_apply_saved_config`). En refresh manual/auto conserva la
+        selección por nombre exacto y reengancha el medidor si no se graba.
 
         Fuera de grabación reinicia PortAudio (vía ``list_microphones(refresh=True)``)
         para que micrófonos Bluetooth/USB recién conectados aparezcan. Durante
         grabación solo consulta la lista cacheada (Recording Always Wins).
         """
+        user_driven = bool(manual or auto)
         had_items = self._mic_combo.count() > 0
         prev_key = self._mic_selection_key() if had_items else None
         prev_names = {m.name for m in (self._mics or [])}
 
         recording = self._recorder.is_recording()
         # Re-init PortAudio solo idle: corta streams sounddevice (medidor / captura).
-        do_reinit = bool(manual and not recording)
+        do_reinit = bool(user_driven and not recording)
         if do_reinit and self._monitor.is_running():
             self._monitor.set_mic(None)
 
@@ -629,7 +679,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._mics = []
             self._mic_combo.blockSignals(False)
-            if manual:
+            if user_driven:
                 self._status_label.setText(
                     f"No se pudieron listar micrófonos ({exc})"
                 )
@@ -650,7 +700,7 @@ class MainWindow(QMainWindow):
 
         self._mic_combo.blockSignals(False)
 
-        if manual:
+        if user_driven:
             n = len(self._mics)
             new_names = {m.name for m in self._mics}
             added = new_names - prev_names
@@ -848,6 +898,7 @@ class MainWindow(QMainWindow):
 
     def _on_started(self) -> None:
         self._exit_busy()
+        self._hotplug_followup.stop()
         self._set_recording_ui(True)
 
     def _enter_busy(self, status_msg: str, btn_text: str) -> None:
@@ -944,6 +995,7 @@ class MainWindow(QMainWindow):
             self._finish_quit()
             return
         self._start_monitor()  # reanudar medidores en vivo
+        self._flush_pending_mic_hotplug()
         # Notificación nativa solo si la ventana está minimizada/en bandeja.
         if self._tray.isVisible() and not self.isActiveWindow():
             self._tray.showMessage("Grabación lista", os.path.basename(path),
@@ -958,6 +1010,7 @@ class MainWindow(QMainWindow):
             self._finish_quit()
             return
         self._start_monitor()
+        self._flush_pending_mic_hotplug()
         self._dialog(QMessageBox.Critical, "Error al procesar", msg).exec()
 
     # --- transcripción (vía señal del worker) --------------------------------
@@ -1127,15 +1180,32 @@ class MainWindow(QMainWindow):
         # Salir desde el menú de la bandeja = mismo flujo que cerrar la ventana.
         self.close()
 
+    def _teardown_native_filters(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is None:
+            return
+        for filt in (getattr(self, "_device_watcher", None), getattr(self, "_hotkeys", None)):
+            if filt is None:
+                continue
+            try:
+                app.removeNativeEventFilter(filt)
+            except Exception:
+                pass
+
     def _finish_quit(self) -> None:
         """Limpia recursos y cierra la aplicación de verdad."""
         from PySide6.QtWidgets import QApplication
 
+        self._hotplug_debounce.stop()
+        self._hotplug_followup.stop()
         self._stop_monitor()
         try:
             self._hotkeys.unregister()
         except Exception:
             pass
+        self._teardown_native_filters()
         try:
             self._tray.hide()
         except Exception:
@@ -1173,11 +1243,14 @@ class MainWindow(QMainWindow):
         # Sin grabación: cerrar limpio y asegurar que el proceso termina.
         from PySide6.QtWidgets import QApplication
 
+        self._hotplug_debounce.stop()
+        self._hotplug_followup.stop()
         self._stop_monitor()
         try:
             self._hotkeys.unregister()
         except Exception:
             pass
+        self._teardown_native_filters()
         try:
             self._tray.hide()
         except Exception:
