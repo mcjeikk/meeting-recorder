@@ -444,3 +444,50 @@ def grab_window_frame(hwnd: int, timeout: float = 2.0) -> Optional[np.ndarray]:
     except Exception:
         pass
     return holder.get("f")
+
+
+def grab_monitor_frame(monitor_index: int = 1, timeout: float = 2.0) -> Optional[np.ndarray]:
+    """Captura UN solo fotograma de un monitor con WGC (BGRA) o None.
+
+    ``monitor_index`` es 1-based (mismo contrato que WindowsCapture / list_monitors).
+    Pensado para vista previa en hilo de fondo (no bloquear el hilo Qt).
+    """
+    try:
+        from windows_capture import WindowsCapture
+    except Exception:
+        return None
+
+    mon = int(monitor_index or 1)
+    if mon < 1:
+        mon = 1
+    holder = {}
+    evt = threading.Event()
+    try:
+        cap = WindowsCapture(
+            cursor_capture=False,
+            draw_border=False,
+            monitor_index=mon,
+        )
+    except Exception:
+        return None
+
+    @cap.event
+    def on_frame_arrived(frame, capture_control):
+        holder["f"] = np.array(frame.frame_buffer, copy=True)
+        evt.set()
+        capture_control.stop()
+
+    @cap.event
+    def on_closed():
+        pass
+
+    try:
+        ctrl = cap.start_free_threaded()
+    except Exception:
+        return None
+    evt.wait(timeout=timeout)
+    try:
+        ctrl.stop()
+    except Exception:
+        pass
+    return holder.get("f")

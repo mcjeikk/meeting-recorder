@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
     _started_sig = Signal()
     _progress_sig = Signal(int)
     _tx_update_sig = Signal(dict)  # snapshots del worker de transcripción
+    _preview_ready_sig = Signal(object, int)  # QImage, generation
 
     def __init__(self):
         super().__init__()
@@ -165,6 +166,9 @@ class MainWindow(QMainWindow):
         self._last_output: Optional[str] = None
         self._blink_on = False
         self._preview_counter = 0
+        self._preview_busy = False
+        self._preview_dirty = False
+        self._preview_gen = 0
         self._quit_after_finalize = False
         self._hotkeys_registered = False
         self._own_hint = os.path.basename(sys.executable)  # para excluirnos en la detección
@@ -204,6 +208,7 @@ class MainWindow(QMainWindow):
             is_recording=self._recorder.is_recording,
         )
         self._tx_update_sig.connect(self._on_tx_update)
+        self._preview_ready_sig.connect(self._on_preview_ready)
 
         self._build_ui()
         self._setup_tray()
@@ -804,58 +809,91 @@ class MainWindow(QMainWindow):
 
     # --- vista previa --------------------------------------------------------
     def _update_preview(self) -> None:
+        """Actualiza la miniatura sin bloquear el hilo Qt en grabs WGC."""
         try:
             source = self._source_combo.currentData()
-            # VENTANA -> usar WGC (igual que la grabación); grabWindow daría blanco
-            # con ventanas aceleradas por GPU como Teams.
-            if isinstance(source, VideoSource) and source.kind == "window" and source.hwnd:
-                if self._recorder.is_recording():
-                    frame = self._recorder.current_video_frame()  # del backend, gratis
-                else:
-                    from app.capture.windows_video import grab_window_frame
-
-                    frame = grab_window_frame(int(source.hwnd))
+            # Durante grabación el backend ya tiene el frame — barato, síncrono.
+            # No abrir otra sesión WGC de preview encima de la captura activa.
+            if self._recorder.is_recording():
+                frame = self._recorder.current_video_frame()
                 if frame is not None:
                     self._set_preview_pixmap(self._bgra_to_pixmap(frame))
                 return
 
-            # PANTALLA -> grab del QScreen que mejor coincida con el monitor elegido.
-            from PySide6.QtGui import QGuiApplication
-            from PySide6.QtWidgets import QApplication
-
-            screen = None
-            mon_idx = None
-            if isinstance(source, VideoSource) and source.kind == "screen":
-                mon_idx = source.monitor_index
-            screens = QGuiApplication.screens()
-            if mon_idx and screens:
-                # Emparejar por orden ordinal (mejor esfuerzo); Qt no usa el
-                # mismo índice WGC, pero en la práctica suele alinear.
-                i = max(0, int(mon_idx) - 1)
-                if i < len(screens):
-                    screen = screens[i]
-            if screen is None:
-                screen = QApplication.primaryScreen()
-            if screen is None:
+            if not isinstance(source, VideoSource):
                 return
-            pm = screen.grabWindow(0)
-            if not pm.isNull():
-                self._set_preview_pixmap(pm)
+
+            if self._preview_busy:
+                self._preview_dirty = True
+                return
+
+            hwnd = None
+            mon_idx = None
+            if source.kind == "window" and source.hwnd:
+                hwnd = int(source.hwnd)
+            elif source.kind == "screen":
+                mon_idx = int(source.monitor_index or 1)
+            else:
+                return
+
+            self._preview_busy = True
+            self._preview_dirty = False
+            self._preview_gen += 1
+            gen = self._preview_gen
+            threading.Thread(
+                target=self._preview_grab_worker,
+                args=(hwnd, mon_idx, gen),
+                daemon=True,
+            ).start()
+        except Exception:
+            self._preview_busy = False
+
+    def _preview_grab_worker(
+        self, hwnd: Optional[int], mon_idx: Optional[int], gen: int
+    ) -> None:
+        frame = None
+        try:
+            from app.capture.windows_video import grab_monitor_frame, grab_window_frame
+
+            if hwnd is not None:
+                frame = grab_window_frame(hwnd)
+            elif mon_idx is not None:
+                frame = grab_monitor_frame(mon_idx)
+        except Exception:
+            frame = None
+        img = None
+        if frame is not None:
+            try:
+                img = self._bgra_to_qimage(frame)
+            except Exception:
+                img = None
+        self._preview_ready_sig.emit(img, gen)
+
+    def _on_preview_ready(self, img: object, gen: int) -> None:
+        self._preview_busy = False
+        try:
+            if gen == self._preview_gen and isinstance(img, QImage) and not img.isNull():
+                self._set_preview_pixmap(QPixmap.fromImage(img))
         except Exception:
             pass
+        if self._preview_dirty:
+            self._preview_dirty = False
+            self._update_preview()
 
     def _set_preview_pixmap(self, pm: QPixmap) -> None:
         scaled = pm.scaled(
             self._preview.width(), self._preview.height(),
-            Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            Qt.KeepAspectRatio, Qt.FastTransformation,
         )
         self._preview.setPixmap(scaled)
 
-    def _bgra_to_pixmap(self, frame) -> QPixmap:
-        """Convierte un fotograma BGRA (numpy) a QPixmap (opaco)."""
+    def _bgra_to_qimage(self, frame) -> QImage:
+        """Convierte un fotograma BGRA (numpy) a QImage opaco (seguro off-thread)."""
         h, w = frame.shape[:2]
-        img = QImage(frame.data, w, h, w * 4, QImage.Format_RGB32).copy()
-        return QPixmap.fromImage(img)
+        return QImage(frame.data, w, h, w * 4, QImage.Format_RGB32).copy()
+
+    def _bgra_to_pixmap(self, frame) -> QPixmap:
+        return QPixmap.fromImage(self._bgra_to_qimage(frame))
 
     # --- acciones ------------------------------------------------------------
     def _choose_output(self) -> None:
