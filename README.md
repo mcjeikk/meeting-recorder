@@ -75,9 +75,10 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
    👉 **Puedes cambiar de micrófono o silenciarlo (botón 🎤/🔇) durante la grabación.**
    - **Indicador de reunión**: la app detecta si **Teams/Zoom/Meet u otra app está
      usando el micrófono** (igual que el ícono junto al reloj) y lo muestra.
-   - Opción **experimental**: *"silenciar mi micrófono cuando ninguna app de reunión
-     lo esté usando"* — si tu Teams libera el micrófono al mutearte, la app sigue ese
-     estado automáticamente.
+   - Opción **experimental** (casilla): *"silenciar mi micrófono cuando ninguna otra
+     app lo esté usando"* — sincroniza el mute del grabador con ese uso a nivel
+     Windows. Solo ayuda si la app de reunión **libera** el micrófono al mutearte;
+     si Teams sigue capturando (lo habitual), usa el botón 🔇 o Ctrl+Shift+M.
 3. **Audio del sistema** → déjalo **activado** para grabar lo que suena en la reunión.
 4. **Carpeta de salida** → dónde se guardará el archivo.
 5. Pulsa **● Grabar**. El botón cambia a **■ Detener** y aparece **⏸ Pausar**; verás

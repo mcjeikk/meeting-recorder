@@ -130,3 +130,11 @@ def is_microphone_in_use_by_others(own_hints: tuple = ()) -> bool:
     except Exception:
         pass
     return len(microphone_users(tuple(own))) > 0
+
+
+def desired_follow_meeting_mute(others_using: bool) -> bool:
+    """Mute deseado para el modo experimental follow-meeting.
+
+    Si nadie más usa el mic → silenciar nuestra pista; si hay uso → activar.
+    """
+    return not bool(others_using)

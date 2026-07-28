@@ -49,7 +49,11 @@ from PySide6.QtWidgets import (
 
 from app.capture.monitor import AudioMonitor
 from app.core.config import AppConfig, AudioDevice, RecordingSettings, VideoSource
-from app.core.mic_usage import microphone_users
+from app.core.mic_usage import (
+    desired_follow_meeting_mute,
+    is_microphone_in_use_by_others,
+    microphone_users,
+)
 from app.core.orchestrator import Recorder
 from app.transcription.integration import is_available as transcriptor_disponible
 from app.transcription.jobs import JobStore, normalize_language
@@ -321,6 +325,16 @@ class MainWindow(QMainWindow):
         self._mic_usage_label = QLabel("Micrófono del sistema: …")
         self._mic_usage_label.setObjectName("muted")
         mic_lay.addWidget(self._mic_usage_label)
+        self._auto_mute_check = QCheckBox(
+            "Experimental: silenciar mi micrófono cuando ninguna otra app lo use"
+        )
+        self._auto_mute_check.setToolTip(
+            "Sigue el uso del micrófono a nivel Windows (como el icono junto al reloj). "
+            "Si Teams/Zoom siguen capturando al mutearte dentro de la app, esto NO lo detecta. "
+            "Con la casilla activa, el mute se sincroniza en cada comprobación."
+        )
+        self._auto_mute_check.toggled.connect(self._on_auto_mute_toggled)
+        mic_lay.addWidget(self._auto_mute_check)
         hint = QLabel("Para no grabar tu voz, usa 🔇 o el atajo Ctrl+Shift+M.")
         hint.setObjectName("muted")
         mic_lay.addWidget(hint)
@@ -766,6 +780,9 @@ class MainWindow(QMainWindow):
             self._tx_lang.setToolTip("")
         self._set_preset_ui(self._config.transcription_preset, save=False)
         self._set_language_ui(self._config.transcription_language, save=False)
+        self._auto_mute_check.blockSignals(True)
+        self._auto_mute_check.setChecked(bool(self._config.auto_mute_follow_meeting))
+        self._auto_mute_check.blockSignals(False)
         if self._config.last_mic_name:
             idx = self._mic_combo.findText(self._config.last_mic_name)
             if idx >= 0:
@@ -1010,6 +1027,12 @@ class MainWindow(QMainWindow):
         self._recorder.set_mic_muted(not self._recorder.is_mic_muted())
         self._update_mute_button()
 
+    def _on_auto_mute_toggled(self, checked: bool) -> None:
+        self._config.auto_mute_follow_meeting = bool(checked)
+        self._config.save()
+        if checked:
+            self._update_mic_usage()
+
     def _update_mute_button(self) -> None:
         muted = self._recorder.is_mic_muted()
         if muted:
@@ -1029,6 +1052,7 @@ class MainWindow(QMainWindow):
         self._config.transcribe_after_recording = self._tx_check.isChecked()
         self._config.transcription_preset = normalize_preset(self._tx_preset.currentData())
         self._config.transcription_language = normalize_language(self._tx_lang.currentData())
+        self._config.auto_mute_follow_meeting = self._auto_mute_check.isChecked()
         self._config.save()
 
     # --- callbacks del orquestador (vía señales) ----------------------------
@@ -1217,6 +1241,16 @@ class MainWindow(QMainWindow):
             )
         else:
             self._mic_usage_label.setText("🟢 Sin llamada activa")
+
+        if self._auto_mute_check.isChecked():
+            try:
+                others = is_microphone_in_use_by_others((self._own_hint, "python"))
+            except Exception:
+                return
+            want_mute = desired_follow_meeting_mute(others)
+            if want_mute != self._recorder.is_mic_muted():
+                self._recorder.set_mic_muted(want_mute)
+                self._update_mute_button()
 
     def _open_output_folder(self) -> None:
         if not self._last_output:

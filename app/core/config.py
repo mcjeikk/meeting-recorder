@@ -108,6 +108,8 @@ class AppConfig:
     transcription_preset: str = "equilibrado"  # rapido|equilibrado|maxima_calidad
     transcriptor_dir: str = field(default_factory=default_transcriptor_dir)
     pause_transcription_while_recording: bool = True  # suspender el proceso al grabar
+    # Experimental: silenciar pista de mic si ninguna otra app usa el mic (OS).
+    auto_mute_follow_meeting: bool = False
 
     @classmethod
     def load(cls) -> "AppConfig":
