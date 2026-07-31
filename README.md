@@ -77,9 +77,11 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
      usando el micrófono** (igual que el ícono junto al reloj) y lo muestra.
    - Opción **experimental**: *"Auto-silenciar fuera de llamada (experimental)"*
      — silencia **tu pista de grabación** cuando Windows no ve ninguna app de
-     reunión usando el mic; la reactiva al detectar llamada. **No** sigue el
-     mute interno de Teams (si Teams sigue capturando, Windows cree que hay
-     llamada): para eso usa 🔇 o Ctrl+Shift+M.
+     reunión usando el mic; la reactiva al detectar llamada. Solo actúa al
+     **entrar/salir** de llamada (un mute manual durante la llamada se respeta
+     hasta el siguiente cambio). **No** sigue el mute interno de Teams (si
+     Teams sigue capturando, Windows cree que hay llamada): para eso usa 🔇 o
+     Ctrl+Shift+M.
 3. **Audio del sistema** → déjalo **activado** para grabar lo que suena en la reunión.
 4. **Carpeta de salida** → dónde se guardará el archivo.
 5. Pulsa **● Grabar**. El botón cambia a **■ Detener** y aparece **⏸ Pausar**; verás

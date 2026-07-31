@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 _MIC_KEY = (
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager"
@@ -138,3 +138,21 @@ def desired_follow_meeting_mute(others_using: bool) -> bool:
     Si nadie más usa el mic → silenciar nuestra pista; si hay uso → activar.
     """
     return not bool(others_using)
+
+
+def should_apply_follow_meeting_mute(
+    others_using: bool,
+    prev_others_using: Optional[bool],
+) -> Optional[bool]:
+    """Mute a aplicar solo en flanco (edge), no en cada poll.
+
+    - Primera muestra (prev is None) o cambio de others_using → desired mute.
+    - Mismo others_using que el poll anterior → None (no pisar mute manual).
+
+    Así, si el usuario silencia a mano durante una llamada, el mute se mantiene
+    hasta que la llamada termine o vuelva a empezar.
+    """
+    others = bool(others_using)
+    if prev_others_using is None or bool(prev_others_using) != others:
+        return desired_follow_meeting_mute(others)
+    return None

@@ -50,9 +50,9 @@ from PySide6.QtWidgets import (
 from app.capture.monitor import AudioMonitor
 from app.core.config import AppConfig, AudioDevice, RecordingSettings, VideoSource
 from app.core.mic_usage import (
-    desired_follow_meeting_mute,
     is_microphone_in_use_by_others,
     microphone_users,
+    should_apply_follow_meeting_mute,
 )
 from app.core.orchestrator import Recorder
 from app.transcription.integration import is_available as transcriptor_disponible
@@ -236,6 +236,9 @@ class MainWindow(QMainWindow):
         self._quit_after_finalize = False
         self._hotkeys_registered = False
         self._own_hint = os.path.basename(sys.executable)  # para excluirnos en la detección
+        # Último others_using visto por auto-mute (None = aún no muestreado /
+        # rearmado). Solo aplicamos mute en flancos para no pisar el mute manual.
+        self._auto_mute_others_prev: Optional[bool] = None
         self._monitor = AudioMonitor()  # medidores en vivo cuando NO se graba
         self._pending_mic_hotplug_refresh = False
         self._sys_silent_ticks = 0
@@ -399,6 +402,8 @@ class MainWindow(QMainWindow):
             "Si Windows no ve a Teams/Zoom (u otra app) usando el micrófono, "
             "graba silencio en tu pista. Cuando detecta una llamada, vuelve a "
             "grabar tu voz.\n\n"
+            "Solo actúa al entrar/salir de llamada: un mute manual durante la "
+            "llamada se respeta hasta el siguiente cambio de estado.\n\n"
             "No detecta el botón de mute DENTRO de Teams: si Teams sigue "
             "capturando el mic, Windows cree que hay llamada. Para eso usa 🔇 "
             "o Ctrl+Shift+M."
@@ -408,7 +413,8 @@ class MainWindow(QMainWindow):
         mic_lay.addWidget(
             _wrap_label(
                 "Silencia TU pista de grabación cuando Windows no ve ninguna app de "
-                "reunión en el mic; la reactiva al detectar llamada. No sigue el mute "
+                "reunión en el mic; la reactiva al detectar llamada. El mute manual "
+                "se respeta hasta el siguiente cambio de llamada. No sigue el mute "
                 "interno de Teams — usa 🔇 / Ctrl+Shift+M para eso.",
                 muted=True,
             )
@@ -1193,6 +1199,8 @@ class MainWindow(QMainWindow):
     def _on_auto_mute_toggled(self, checked: bool) -> None:
         self._config.auto_mute_follow_meeting = bool(checked)
         self._config.save()
+        # Rearmar: al (re)activar, aplicar una vez; al desactivar, olvidar flanco.
+        self._auto_mute_others_prev = None
         if checked:
             self._update_mic_usage()
 
@@ -1430,8 +1438,14 @@ class MainWindow(QMainWindow):
                 others = is_microphone_in_use_by_others((self._own_hint, "python"))
             except Exception:
                 return
-            want_mute = desired_follow_meeting_mute(others)
-            if want_mute != self._recorder.is_mic_muted():
+            # Edge-triggered: solo aplicar al entrar/salir de llamada (o al
+            # armar), para que un mute manual durante la llamada no se pise
+            # cada ~1.5 s.
+            want_mute = should_apply_follow_meeting_mute(
+                others, self._auto_mute_others_prev
+            )
+            self._auto_mute_others_prev = bool(others)
+            if want_mute is not None and want_mute != self._recorder.is_mic_muted():
                 self._recorder.set_mic_muted(want_mute)
                 self._update_mute_button()
 
