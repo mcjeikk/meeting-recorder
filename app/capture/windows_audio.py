@@ -23,6 +23,21 @@ from app.core.config import AudioDevice
 
 _CHUNK = 1024
 
+# Nombres típicos de salidas Bluetooth en Windows (A2DP / HFP). El loopback
+# WASAPI de estos endpoints suele devolver silencio aunque el usuario oiga bien.
+_BLUETOOTH_HINTS = (
+    "bluetooth",
+    "hands-free",
+    "handsfree",
+    "headset",
+    "a2dp",
+    "hfp",
+    "hsp",
+    "airpods",
+    "galaxy buds",
+    "wh-1000",
+)
+
 
 def _rms_level(samples_int16: np.ndarray) -> float:
     """Nivel RMS normalizado a 0–1 a partir de muestras int16."""
@@ -31,6 +46,99 @@ def _rms_level(samples_int16: np.ndarray) -> float:
     x = samples_int16.astype(np.float32) / 32768.0
     rms = float(np.sqrt(np.mean(np.square(x))))
     return min(1.0, rms * 3.0)  # ligera compresión para que el medidor se vea mejor
+
+
+def is_bluetooth_audio_name(name: str) -> bool:
+    """True si el nombre del dispositivo parece una salida/auricular Bluetooth."""
+    low = (name or "").lower()
+    return any(h in low for h in _BLUETOOTH_HINTS)
+
+
+def resolve_wasapi_loopback(pa) -> dict:
+    """Elige el dispositivo loopback WASAPI de la salida por defecto.
+
+    Raises RuntimeError si no hay ninguno usable.
+    """
+    import pyaudiowpatch as pyaudio
+
+    wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+    speakers = pa.get_device_info_by_index(wasapi["defaultOutputDevice"])
+    if speakers.get("isLoopbackDevice", False):
+        return speakers
+
+    loopbacks = list(pa.get_loopback_device_info_generator())
+    if not loopbacks:
+        raise RuntimeError("No hay dispositivos de loopback WASAPI en este equipo.")
+
+    # 1) Coincidencia por nombre (caso normal: "Altavoces (...) [Loopback]").
+    for lb in loopbacks:
+        if speakers["name"] in lb["name"]:
+            return lb
+
+    # 2) Coincidencia laxa: quitar sufijos frecuentes y comparar tokens.
+    def _tokens(s: str) -> set:
+        cleaned = (
+            s.lower()
+            .replace("[loopback]", "")
+            .replace("(loopback)", "")
+        )
+        for ch in "()[]-_/\\":
+            cleaned = cleaned.replace(ch, " ")
+        return {t for t in cleaned.split() if len(t) > 2}
+
+    spk_tok = _tokens(speakers["name"])
+    best, best_n = None, 0
+    for lb in loopbacks:
+        n = len(spk_tok & _tokens(lb["name"]))
+        if n > best_n:
+            best, best_n = lb, n
+    if best is not None and best_n > 0:
+        return best
+
+    # 3) Último recurso: primer loopback (mejor que fallar en seco).
+    return loopbacks[0]
+
+
+def describe_system_audio_route() -> dict:
+    """Info de la ruta actual de audio del sistema (para avisos en la UI).
+
+    Devuelve dict con keys: ok, output_name, loopback_name, bluetooth, warning.
+    """
+    try:
+        import pyaudiowpatch as pyaudio
+
+        pa = pyaudio.PyAudio()
+        try:
+            wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+            speakers = pa.get_device_info_by_index(wasapi["defaultOutputDevice"])
+            lb = resolve_wasapi_loopback(pa)
+            bt = is_bluetooth_audio_name(speakers["name"]) or is_bluetooth_audio_name(
+                lb.get("name", "")
+            )
+            warning = ""
+            if bt:
+                warning = (
+                    "La salida por defecto es Bluetooth. En muchos PCs Windows "
+                    "NO captura ese audio del sistema (pista Sistema en silencio). "
+                    "Cambia la salida a Altavoces para grabar la reunión."
+                )
+            return {
+                "ok": True,
+                "output_name": speakers["name"],
+                "loopback_name": lb["name"],
+                "bluetooth": bt,
+                "warning": warning,
+            }
+        finally:
+            pa.terminate()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "output_name": "",
+            "loopback_name": "",
+            "bluetooth": False,
+            "warning": f"No se pudo comprobar el audio del sistema ({exc})",
+        }
 
 
 def reinitialize_portaudio() -> None:
@@ -111,21 +219,7 @@ class SystemAudioCapture(AudioCapture):
         self._channels = 2
         self._rate = 48_000
 
-    def _find_loopback_device(self, pa):
-        import pyaudiowpatch as pyaudio
-
-        wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-        speakers = pa.get_device_info_by_index(wasapi["defaultOutputDevice"])
-        if not speakers.get("isLoopbackDevice", False):
-            for lb in pa.get_loopback_device_info_generator():
-                if speakers["name"] in lb["name"]:
-                    return lb
-            raise RuntimeError(
-                "No se encontró un dispositivo de loopback para los parlantes por defecto."
-            )
-        return speakers
-
-    def _start_keepalive(self) -> None:
+    def _start_keepalive(self, sample_rate: int = 48_000) -> None:
         """Reproduce silencio digital para mantener activo el motor de audio."""
         try:
             import sounddevice as sd
@@ -134,22 +228,25 @@ class SystemAudioCapture(AudioCapture):
                 outdata.fill(0)
 
             self._keepalive = sd.OutputStream(
-                samplerate=48_000, channels=2, dtype="float32",
-                blocksize=_CHUNK, callback=_silence,
+                samplerate=int(sample_rate) or 48_000,
+                channels=2,
+                dtype="float32",
+                blocksize=_CHUNK,
+                callback=_silence,
             )
             self._keepalive.start()
         except Exception:
-            self._keepalive = None  # no es crítico
+            self._keepalive = None  # no es critico
 
     def start(self, output_path: str) -> None:
         import pyaudiowpatch as pyaudio
 
-        self._start_keepalive()
-
         self._pa = pyaudio.PyAudio()
-        device = self._find_loopback_device(self._pa)
+        device = resolve_wasapi_loopback(self._pa)
         self._channels = max(1, int(device["maxInputChannels"]))
         self._rate = int(device["defaultSampleRate"])
+        # Keepalive tras conocer el rate del endpoint (sobre la salida por defecto).
+        self._start_keepalive(self._rate)
 
         self._wave = wave.open(output_path, "wb")
         self._wave.setnchannels(self._channels)

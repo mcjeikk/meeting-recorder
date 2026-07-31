@@ -75,10 +75,11 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
    👉 **Puedes cambiar de micrófono o silenciarlo (botón 🎤/🔇) durante la grabación.**
    - **Indicador de reunión**: la app detecta si **Teams/Zoom/Meet u otra app está
      usando el micrófono** (igual que el ícono junto al reloj) y lo muestra.
-   - Opción **experimental** (casilla): *"silenciar mi micrófono cuando ninguna otra
-     app lo esté usando"* — sincroniza el mute del grabador con ese uso a nivel
-     Windows. Solo ayuda si la app de reunión **libera** el micrófono al mutearte;
-     si Teams sigue capturando (lo habitual), usa el botón 🔇 o Ctrl+Shift+M.
+   - Opción **experimental**: *"Auto-silenciar fuera de llamada (experimental)"*
+     — silencia **tu pista de grabación** cuando Windows no ve ninguna app de
+     reunión usando el mic; la reactiva al detectar llamada. **No** sigue el
+     mute interno de Teams (si Teams sigue capturando, Windows cree que hay
+     llamada): para eso usa 🔇 o Ctrl+Shift+M.
 3. **Audio del sistema** → déjalo **activado** para grabar lo que suena en la reunión.
 4. **Carpeta de salida** → dónde se guardará el archivo.
 5. Pulsa **● Grabar**. El botón cambia a **■ Detener** y aparece **⏸ Pausar**; verás
@@ -105,6 +106,16 @@ Si escuchas la reunión por **altavoces**, tu micrófono captará ese sonido y s
    terminar la grabación, la app usa el audio del sistema como referencia para
    **cancelar el eco** de tu pista de micrófono (filtro adaptativo; ~15 dB de
    reducción en pruebas). El procesado tarda unos segundos al finalizar.
+
+### ⚠️ Bluetooth y audio del sistema
+Si la **salida por defecto** de Windows es un auricular **Bluetooth**, en muchos
+equipos el loopback WASAPI deja la pista **Sistema en silencio** (oyes la reunión
+en el headset, pero Windows no deja capturar esa mezcla). La app avisa cuando
+detecta esa ruta. Para grabar el audio de los demás participantes:
+1. En Windows, cambia la salida a **Altavoces** (o un dispositivo con cable), o
+2. Usa un cable virtual (p. ej. VB-Audio) si debes quedarte en Bluetooth.
+El **micrófono** Bluetooth (Hands-Free) sí se puede grabar; el problema es solo
+la captura de lo que *suena* por el auricular.
 
 ### 🎙️ Nota sobre el mute en reuniones (Teams/Zoom/Meet)
 La app **no puede saber** si te silenciaste *dentro* de Teams: ese mute es interno

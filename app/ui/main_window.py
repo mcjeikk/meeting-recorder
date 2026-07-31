@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -58,6 +58,7 @@ from app.core.orchestrator import Recorder
 from app.transcription.integration import is_available as transcriptor_disponible
 from app.transcription.jobs import JobStore, normalize_language
 from app.ui.device_watcher import DeviceChangeWatcher, hotplug_action
+from app.ui.flow_layout import FlowLayout
 from app.transcription.presets import (
     PRESET_ORDER,
     get_preset,
@@ -90,6 +91,7 @@ QPushButton {{
 QPushButton:hover {{ background:#3d414a; }}
 QPushButton:disabled {{ color:#6b7077; background:#2a2c33; }}
 QCheckBox {{ color:#e6e6e6; spacing:8px; }}
+QCheckBox::indicator {{ width:16px; height:16px; }}
 QProgressBar {{ background:#15161a; border:none; border-radius:4px; }}
 QProgressBar::chunk {{
     border-radius:4px;
@@ -147,6 +149,63 @@ def app_icon() -> QIcon:
     return _make_dot_icon(_DANGER)
 
 
+def _prep_combo(combo: QComboBox) -> None:
+    """Evita que el ítem más largo del combo fije el ancho mínimo de la ventana."""
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(10)
+    combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+
+class _WrapLabel(QLabel):
+    """QLabel con word-wrap cuyo sizeHint NO reclama el ancho del texto sin envolver."""
+
+    def __init__(self, text: str = "", *, muted: bool = False) -> None:
+        super().__init__(text)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        if muted:
+            self.setObjectName("muted")
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def minimumSizeHint(self):
+        # Permite encoger; la altura real la da heightForWidth en el layout.
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        # Ancho preferido compacto: sin esto Qt usa el texto en una sola línea
+        # y la ventana "no es responsive".
+        w = 160
+        return QSize(w, max(16, self.heightForWidth(w)))
+
+
+def _wrap_label(text: str, *, muted: bool = False) -> QLabel:
+    return _WrapLabel(text, muted=muted)
+
+
+def _wrapping_check(text: str) -> tuple[QWidget, QCheckBox]:
+    """Casilla + etiqueta con word-wrap (QCheckBox no envuelve el texto solo)."""
+    wrap = QWidget()
+    wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    row = QHBoxLayout(wrap)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(8)
+    cb = QCheckBox()
+    cb.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    class _ToggleLabel(_WrapLabel):
+        def mousePressEvent(self, event) -> None:  # noqa: N802
+            cb.toggle()
+            super().mousePressEvent(event)
+
+    clickable = _ToggleLabel(text)
+    clickable.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+    row.addWidget(cb, 0, Qt.AlignTop)
+    row.addWidget(clickable, 1)
+    return wrap, cb
+
+
 class MainWindow(QMainWindow):
     # Señales para actualizar la UI desde hilos de fondo de forma segura.
     _status_sig = Signal(str)
@@ -160,7 +219,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Grabador de Reuniones")
-        self.setMinimumWidth(540)
+        # Mínimo bajo: el QScrollArea absorbe el resto (scroll H/V).
+        self.setMinimumSize(360, 320)
         self.setWindowIcon(app_icon())
         self.setStyleSheet(_STYLE)
 
@@ -178,6 +238,8 @@ class MainWindow(QMainWindow):
         self._own_hint = os.path.basename(sys.executable)  # para excluirnos en la detección
         self._monitor = AudioMonitor()  # medidores en vivo cuando NO se graba
         self._pending_mic_hotplug_refresh = False
+        self._sys_silent_ticks = 0
+        self._sys_silence_warned = False
         self._hotplug_debounce = QTimer(self)
         self._hotplug_debounce.setSingleShot(True)
         self._hotplug_debounce.setInterval(800)
@@ -224,15 +286,12 @@ class MainWindow(QMainWindow):
         self._update_mute_button()
         self._update_preview()
 
-        # Tamaño inicial: el del contenido pero sin exceder el área útil del
-        # monitor (con escala de Windows alta el contenido completo puede no
-        # caber y la ventana nacería con el botón Grabar bajo la barra de tareas).
+        # Tamaño inicial compacto (no forzar el ancho del sizeHint del contenido,
+        # que con combos/banners largos hincha la ventana y parece "no responsive").
         avail = QGuiApplication.primaryScreen().availableGeometry()
-        hint = self._central.sizeHint()
-        self.resize(
-            min(hint.width() + 20, avail.width() - 40),
-            min(hint.height() + 140, avail.height() - 60),
-        )
+        init_w = min(480, max(400, avail.width() // 3), avail.width() - 40)
+        init_h = min(720, avail.height() - 60)
+        self.resize(init_w, init_h)
         frame = self.frameGeometry()
         frame.moveCenter(avail.center())
         self.move(frame.topLeft())
@@ -268,14 +327,13 @@ class MainWindow(QMainWindow):
 
         # Encabezado con indicador de grabación
         header = QHBoxLayout()
-        title = QLabel("Grabador de Reuniones")
+        title = _wrap_label("Grabador de Reuniones")
         title.setStyleSheet("font-size:18px; font-weight:bold;")
         self._rec_dot = QLabel("●")
         self._rec_dot.setStyleSheet(f"color:{_DANGER}; font-size:16px;")
         self._rec_dot.setVisible(False)
-        header.addWidget(title)
-        header.addStretch(1)
-        header.addWidget(self._rec_dot)
+        header.addWidget(title, 1)
+        header.addWidget(self._rec_dot, 0, Qt.AlignTop)
         root.addLayout(header)
 
         # Vista previa
@@ -293,109 +351,131 @@ class MainWindow(QMainWindow):
         prev_lay.addWidget(self._preview)
         root.addWidget(prev_box, 1)
 
-        # 1. Fuente
-        src_box = QGroupBox("1. ¿Qué quieres grabar?")
-        src_lay = QHBoxLayout(src_box)
+        # 1. Fuente — combo a ancho completo; botones en FlowLayout (reflow).
+        src_box = QGroupBox("1. Fuente de captura")
+        src_lay = QVBoxLayout(src_box)
         self._source_combo = QComboBox()
+        _prep_combo(self._source_combo)
         self._source_combo.currentIndexChanged.connect(self._update_preview)
         self._refresh_btn = QPushButton("🔄 Actualizar")
+        self._refresh_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._refresh_btn.clicked.connect(self._on_refresh)
-        src_lay.addWidget(self._source_combo, 1)
-        src_lay.addWidget(self._refresh_btn)
+        src_lay.addWidget(self._source_combo)
+        src_btns = FlowLayout(h_spacing=8, v_spacing=6)
+        src_btns.addWidget(self._refresh_btn)
+        src_lay.addLayout(src_btns)
         root.addWidget(src_box)
 
         # 2. Micrófono (se puede cambiar en vivo y silenciar)
-        mic_box = QGroupBox("2. Micrófono  (cámbialo o siléncialo durante la grabación)")
+        mic_box = QGroupBox("2. Micrófono")
         mic_lay = QVBoxLayout(mic_box)
-        mic_row = QHBoxLayout()
         self._mic_combo = QComboBox()
+        _prep_combo(self._mic_combo)
         self._mic_combo.activated.connect(self._on_mic_activated)
         self._mic_refresh_btn = QPushButton("🔄 Actualizar")
+        self._mic_refresh_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._mic_refresh_btn.clicked.connect(self._on_refresh_mics)
         self._mute_btn = QPushButton("🎤 Activo")
-        self._mute_btn.setFixedWidth(130)
+        self._mute_btn.setMaximumWidth(130)
+        self._mute_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._mute_btn.clicked.connect(self._toggle_mute)
-        mic_row.addWidget(self._mic_combo, 1)
-        mic_row.addWidget(self._mic_refresh_btn)
-        mic_row.addWidget(self._mute_btn)
+        mic_lay.addWidget(self._mic_combo)
+        mic_btns = FlowLayout(h_spacing=8, v_spacing=6)
+        mic_btns.addWidget(self._mic_refresh_btn)
+        mic_btns.addWidget(self._mute_btn)
+        mic_lay.addLayout(mic_btns)
         self._mic_meter = self._make_meter()
-        mic_lay.addLayout(mic_row)
         mic_lay.addWidget(self._mic_meter)
+        mic_lay.addWidget(
+            _wrap_label("Cámbialo o siléncialo durante la grabación.", muted=True)
+        )
         # Indicador informativo: ¿alguna app (Teams/Zoom/Meet) está en llamada?
-        self._mic_usage_label = QLabel("Micrófono del sistema: …")
-        self._mic_usage_label.setObjectName("muted")
+        self._mic_usage_label = _wrap_label("Micrófono del sistema: …", muted=True)
         mic_lay.addWidget(self._mic_usage_label)
-        self._auto_mute_check = QCheckBox(
-            "Experimental: silenciar mi micrófono cuando ninguna otra app lo use"
+        auto_wrap, self._auto_mute_check = _wrapping_check(
+            "Auto-silenciar fuera de llamada (experimental)"
         )
         self._auto_mute_check.setToolTip(
-            "Sigue el uso del micrófono a nivel Windows (como el icono junto al reloj). "
-            "Si Teams/Zoom siguen capturando al mutearte dentro de la app, esto NO lo detecta. "
-            "Con la casilla activa, el mute se sincroniza en cada comprobación."
+            "Si Windows no ve a Teams/Zoom (u otra app) usando el micrófono, "
+            "graba silencio en tu pista. Cuando detecta una llamada, vuelve a "
+            "grabar tu voz.\n\n"
+            "No detecta el botón de mute DENTRO de Teams: si Teams sigue "
+            "capturando el mic, Windows cree que hay llamada. Para eso usa 🔇 "
+            "o Ctrl+Shift+M."
         )
         self._auto_mute_check.toggled.connect(self._on_auto_mute_toggled)
-        mic_lay.addWidget(self._auto_mute_check)
-        hint = QLabel("Para no grabar tu voz, usa 🔇 o el atajo Ctrl+Shift+M.")
-        hint.setObjectName("muted")
-        mic_lay.addWidget(hint)
+        mic_lay.addWidget(auto_wrap)
+        mic_lay.addWidget(
+            _wrap_label(
+                "Silencia TU pista de grabación cuando Windows no ve ninguna app de "
+                "reunión en el mic; la reactiva al detectar llamada. No sigue el mute "
+                "interno de Teams — usa 🔇 / Ctrl+Shift+M para eso.",
+                muted=True,
+            )
+        )
         root.addWidget(mic_box)
 
         # 3. Audio del sistema
-        sys_box = QGroupBox("3. Audio del sistema (lo que escuchas)")
+        sys_box = QGroupBox("3. Audio del sistema")
         sys_lay = QVBoxLayout(sys_box)
-        self._sys_check = QCheckBox("Grabar el audio del sistema")
+        sys_lay.addWidget(
+            _wrap_label("Lo que escuchas en la reunión / escritorio.", muted=True)
+        )
+        sys_wrap, self._sys_check = _wrapping_check("Grabar el audio del sistema")
         self._sys_check.setChecked(True)
         self._sys_meter = self._make_meter()
-        sys_lay.addWidget(self._sys_check)
+        sys_lay.addWidget(sys_wrap)
         sys_lay.addWidget(self._sys_meter)
-        self._aec_check = QCheckBox("Reducir eco del micrófono (útil si grabas con altavoces)")
-        sys_lay.addWidget(self._aec_check)
+        self._sys_route_label = _wrap_label("", muted=True)
+        sys_lay.addWidget(self._sys_route_label)
+        aec_wrap, self._aec_check = _wrapping_check(
+            "Reducir eco del micrófono (útil si grabas con altavoces)"
+        )
+        sys_lay.addWidget(aec_wrap)
         root.addWidget(sys_box)
 
         # 4. Carpeta de salida + transcripción automática
         out_box = QGroupBox("4. Carpeta de salida")
         out_v = QVBoxLayout(out_box)
-        out_lay = QHBoxLayout()
         self._out_edit = QLineEdit()
         self._out_edit.setReadOnly(True)
+        self._out_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         out_btn = QPushButton("Cambiar…")
+        out_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         out_btn.clicked.connect(self._choose_output)
-        out_lay.addWidget(self._out_edit, 1)
-        out_lay.addWidget(out_btn)
-        out_v.addLayout(out_lay)
-        self._tx_check = QCheckBox("📝 Transcribir al terminar")
-        out_v.addWidget(self._tx_check)
-        preset_row = QHBoxLayout()
-        preset_lbl = QLabel("Velocidad / calidad:")
-        preset_lbl.setObjectName("muted")
+        out_v.addWidget(self._out_edit)
+        out_btns = FlowLayout(h_spacing=8, v_spacing=6)
+        out_btns.addWidget(out_btn)
+        out_v.addLayout(out_btns)
+        tx_wrap, self._tx_check = _wrapping_check("📝 Transcribir al terminar")
+        out_v.addWidget(tx_wrap)
+        preset_lbl = _wrap_label("Velocidad / calidad:", muted=True)
         self._tx_preset = QComboBox()
+        _prep_combo(self._tx_preset)
         for pid in PRESET_ORDER:
             self._tx_preset.addItem(get_preset(pid).label_es, pid)
         self._tx_preset.currentIndexChanged.connect(self._on_preset_changed)
-        preset_row.addWidget(preset_lbl)
-        preset_row.addWidget(self._tx_preset, 1)
-        out_v.addLayout(preset_row)
-        self._tx_preset_hint = QLabel("")
-        self._tx_preset_hint.setObjectName("muted")
-        self._tx_preset_hint.setWordWrap(True)
+        out_v.addWidget(preset_lbl)
+        out_v.addWidget(self._tx_preset)
+        self._tx_preset_hint = _wrap_label("", muted=True)
         out_v.addWidget(self._tx_preset_hint)
-        lang_row = QHBoxLayout()
-        lang_lbl = QLabel("Idioma:")
-        lang_lbl.setObjectName("muted")
+        lang_lbl = _wrap_label("Idioma:", muted=True)
         self._tx_lang = QComboBox()
+        _prep_combo(self._tx_lang)
         for label, code in (("Español", "es"), ("English", "en"), ("Auto", "auto")):
             self._tx_lang.addItem(label, code)
         self._tx_lang.currentIndexChanged.connect(self._on_language_changed)
-        lang_row.addWidget(lang_lbl)
-        lang_row.addWidget(self._tx_lang, 1)
-        out_v.addLayout(lang_row)
+        out_v.addWidget(lang_lbl)
+        out_v.addWidget(self._tx_lang)
         root.addWidget(out_box)
 
-        # 5. Botones de grabación
-        btn_row = QHBoxLayout()
+        # 5. Botones de grabación (reflow si no caben en una fila)
+        self._btn_flow = FlowLayout(h_spacing=8, v_spacing=8)
         self._record_btn = QPushButton("●  Grabar")
         self._record_btn.setStyleSheet(_RECORD_BTN)
         self._record_btn.setCursor(Qt.PointingHandCursor)
+        self._record_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._record_btn.setMinimumWidth(120)
         self._record_btn.clicked.connect(self._toggle_record)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(26)
@@ -404,22 +484,22 @@ class MainWindow(QMainWindow):
         self._record_btn.setGraphicsEffect(shadow)
         self._pause_btn = QPushButton("⏸  Pausar")
         self._pause_btn.setCursor(Qt.PointingHandCursor)
+        self._pause_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._pause_btn.clicked.connect(self._toggle_pause)
         self._pause_btn.setVisible(False)
-        btn_row.addWidget(self._record_btn, 2)
-        btn_row.addWidget(self._pause_btn, 1)
-        root.addLayout(btn_row)
+        self._btn_flow.addWidget(self._record_btn)
+        self._btn_flow.addWidget(self._pause_btn)
+        root.addLayout(self._btn_flow)
 
         # Estado
-        status_row = QHBoxLayout()
+        status_col = QVBoxLayout()
+        status_col.setSpacing(2)
         self._timer_label = QLabel("00:00:00")
         self._timer_label.setStyleSheet("font-size:16px; font-weight:bold;")
-        self._status_label = QLabel("Listo para grabar")
-        self._status_label.setObjectName("muted")
-        status_row.addWidget(self._timer_label)
-        status_row.addStretch(1)
-        status_row.addWidget(self._status_label)
-        root.addLayout(status_row)
+        self._status_label = _wrap_label("Listo para grabar", muted=True)
+        status_col.addWidget(self._timer_label)
+        status_col.addWidget(self._status_label)
+        root.addLayout(status_col)
 
         # Barra de actividad (spinner) para iniciar / procesar sin congelar.
         self._busy_bar = QProgressBar()
@@ -430,39 +510,55 @@ class MainWindow(QMainWindow):
         self._busy_bar.setVisible(False)
         root.addWidget(self._busy_bar)
 
-        # Aviso de resultado (en la app, legible) en lugar de un diálogo modal.
+        # Aviso de resultado: texto arriba, acciones en FlowLayout.
         self._result_banner = QFrame()
         self._result_banner.setObjectName("banner")
-        bl = QHBoxLayout(self._result_banner)
+        bl = QVBoxLayout(self._result_banner)
         bl.setContentsMargins(12, 8, 8, 8)
-        self._result_label = QLabel("✓ Grabación guardada")
+        bl.setSpacing(8)
+        self._result_label = _wrap_label("✓ Grabación guardada")
+        bl.addWidget(self._result_label)
+        result_btns = FlowLayout(h_spacing=8, v_spacing=6)
         self._open_btn = QPushButton("📂 Abrir carpeta")
         self._open_btn.setCursor(Qt.PointingHandCursor)
+        self._open_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._open_btn.clicked.connect(self._open_output_folder)
         close_btn = QPushButton("✕")
-        close_btn.setFixedWidth(30)
+        close_btn.setMaximumWidth(36)
+        close_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.clicked.connect(lambda: self._result_banner.setVisible(False))
-        bl.addWidget(self._result_label, 1)
-        bl.addWidget(self._open_btn)
-        bl.addWidget(close_btn)
+        result_btns.addWidget(self._open_btn)
+        result_btns.addWidget(close_btn)
+        bl.addLayout(result_btns)
         self._result_banner.setVisible(False)
         root.addWidget(self._result_banner)
 
         # Estado de la transcripción (misma estética que el banner de resultado).
         self._tx_banner = QFrame()
         self._tx_banner.setObjectName("banner")
-        txl = QHBoxLayout(self._tx_banner)
-        txl.setContentsMargins(12, 8, 8, 8)
+        tx_outer = QVBoxLayout(self._tx_banner)
+        tx_outer.setContentsMargins(12, 8, 8, 8)
+        tx_outer.setSpacing(8)
+        tx_top = QHBoxLayout()
         tx_col = QVBoxLayout()
         tx_col.setSpacing(4)
-        self._tx_label = QLabel("")
+        self._tx_label = _wrap_label("")
         self._tx_bar = QProgressBar()
         self._tx_bar.setTextVisible(False)
         self._tx_bar.setFixedHeight(6)
         tx_col.addWidget(self._tx_label)
         tx_col.addWidget(self._tx_bar)
-        self._tx_open_btn = QPushButton("📄 Abrir transcripción")
+        tx_close = QPushButton("✕")
+        tx_close.setMaximumWidth(36)
+        tx_close.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        tx_close.setCursor(Qt.PointingHandCursor)
+        tx_close.clicked.connect(lambda: self._tx_banner.setVisible(False))
+        tx_top.addLayout(tx_col, 1)
+        tx_top.addWidget(tx_close, 0, Qt.AlignTop)
+        tx_outer.addLayout(tx_top)
+        tx_btns = FlowLayout(h_spacing=8, v_spacing=6)
+        self._tx_open_btn = QPushButton("📄 Abrir")
         self._tx_open_btn.setCursor(Qt.PointingHandCursor)
         self._tx_open_btn.clicked.connect(self._open_transcription)
         self._tx_cancel_btn = QPushButton("Cancelar")
@@ -473,36 +569,54 @@ class MainWindow(QMainWindow):
         self._tx_clear_btn.clicked.connect(self._clear_failed_transcriptions)
         self._tx_log_btn = QPushButton("Ver log")
         self._tx_log_btn.clicked.connect(self._open_tx_log)
-        tx_close = QPushButton("✕")
-        tx_close.setFixedWidth(30)
-        tx_close.setCursor(Qt.PointingHandCursor)
-        tx_close.clicked.connect(lambda: self._tx_banner.setVisible(False))
-        txl.addLayout(tx_col, 1)
-        txl.addWidget(self._tx_open_btn)
-        txl.addWidget(self._tx_cancel_btn)
-        txl.addWidget(self._tx_retry_btn)
-        txl.addWidget(self._tx_clear_btn)
-        txl.addWidget(self._tx_log_btn)
-        txl.addWidget(tx_close)
+        for b in (
+            self._tx_open_btn,
+            self._tx_cancel_btn,
+            self._tx_retry_btn,
+            self._tx_clear_btn,
+            self._tx_log_btn,
+        ):
+            b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            tx_btns.addWidget(b)
+        tx_outer.addLayout(tx_btns)
         self._tx_banner.setVisible(False)
         root.addWidget(self._tx_banner)
 
-        # Dentro de un QScrollArea el alto mínimo de la ventana deja de ser la
-        # suma de todo el contenido (~800 px, no cabía en portátiles con escala
-        # de Windows alta y bloqueaba el redimensionado vertical): si el usuario
-        # la encoge, aparece scroll en vez de impedirlo.
+        # QScrollArea: el mínimo de la ventana no sigue el sizeHint del contenido.
+        # Preferimos reflow; el scroll horizontal queda como último recurso.
         self._central = central
-        scroll = QScrollArea()
-        scroll.setWidget(central)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        self.setCentralWidget(scroll)
+        self._scroll = QScrollArea()
+        central.setMinimumWidth(0)
+        central.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._scroll.setWidget(central)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setMinimumSize(0, 0)
+        self._scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setCentralWidget(self._scroll)
+        self._narrow = False
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # Umbral ~480: compactar márgenes. El reflow real lo hacen FlowLayout,
+        # combos Expanding y word-wrap.
+        narrow = event.size().width() < 480
+        if narrow == getattr(self, "_narrow", False):
+            return
+        self._narrow = narrow
+        m = 10 if narrow else 16
+        if hasattr(self, "_central") and self._central.layout() is not None:
+            self._central.layout().setContentsMargins(m, m, m, m)
+            self._central.layout().setSpacing(10 if narrow else 12)
 
     def _make_meter(self) -> QProgressBar:
         m = QProgressBar()
         m.setRange(0, 100)
         m.setTextVisible(False)
         m.setFixedHeight(10)
+        m.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return m
 
     # --- bandeja y atajos ---------------------------------------------------
@@ -591,6 +705,7 @@ class MainWindow(QMainWindow):
             self._hotkeys_registered = True
         # Medidores en vivo mientras la ventana está visible y no se graba.
         self._start_monitor()
+        self._update_system_route_hint()
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
@@ -754,8 +869,34 @@ class MainWindow(QMainWindow):
                     f"{n} micrófonos encontrados — sin cambios. Si es Bluetooth, "
                     "espera el perfil Hands-Free (no solo Stereo)"
                 )
-            if not recording and self._monitor.is_running():
-                self._monitor.set_mic(self._mic_combo.currentData())
+            if not recording:
+                # Reiniciar medidor completo: el loopback debe seguir la salida
+                # por defecto (p. ej. tras conectar Bluetooth).
+                try:
+                    self._monitor.restart(self._mic_combo.currentData())
+                except Exception:
+                    pass
+                self._update_system_route_hint()
+
+    def _update_system_route_hint(self) -> None:
+        """Aviso si la salida actual (p. ej. BT) suele dejar Sistema en silencio."""
+        if not hasattr(self, "_sys_route_label"):
+            return
+        try:
+            from app.capture.windows_audio import describe_system_audio_route
+
+            info = describe_system_audio_route()
+        except Exception:
+            self._sys_route_label.setText("")
+            return
+        if info.get("warning"):
+            self._sys_route_label.setText("⚠ " + info["warning"])
+        elif info.get("ok") and info.get("output_name"):
+            self._sys_route_label.setText(
+                f"Capturando loopback de: {info['output_name']}"
+            )
+        else:
+            self._sys_route_label.setText(info.get("warning") or "")
 
     def _apply_saved_config(self) -> None:
         self._out_edit.setText(self._config.output_dir or str(Path.home()))
@@ -950,6 +1091,26 @@ class MainWindow(QMainWindow):
             )
             if box.exec() != QMessageBox.Yes:
                 return
+        if self._sys_check.isChecked():
+            try:
+                from app.capture.windows_audio import describe_system_audio_route
+
+                route = describe_system_audio_route()
+            except Exception:
+                route = {}
+            if route.get("bluetooth"):
+                box = self._dialog(
+                    QMessageBox.Warning,
+                    "Audio del sistema y Bluetooth",
+                    route.get("warning")
+                    or (
+                        "La salida por defecto es Bluetooth. Windows suele dejar "
+                        "la pista Sistema en silencio. ¿Grabar igual?"
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if box.exec() != QMessageBox.Yes:
+                    return
         try:
             settings = self._build_settings()
             self._save_config(settings)
@@ -959,6 +1120,8 @@ class MainWindow(QMainWindow):
         # INICIAR: lanzar FFmpeg/streams puede tardar -> en segundo plano.
         self._stop_monitor()
         self._result_banner.setVisible(False)
+        self._sys_silent_ticks = 0
+        self._sys_silence_warned = False
         self._enter_busy("Iniciando grabación…", "⏳  Iniciando…")
         threading.Thread(target=self._do_start, args=(settings,), daemon=True).start()
 
@@ -1205,8 +1368,26 @@ class MainWindow(QMainWindow):
 
         # Medidores: del grabador si graba; del monitor en vivo si está inactivo.
         if self._recorder.is_recording():
-            self._sys_meter.setValue(int(self._recorder.system_level() * 100))
+            sys_lvl = self._recorder.system_level()
+            self._sys_meter.setValue(int(sys_lvl * 100))
             self._mic_meter.setValue(int(self._recorder.mic_level() * 100))
+            # Si Sistema sigue en silencio varios segundos, avisar (BT / salida mala).
+            if (
+                self._sys_check.isChecked()
+                and not self._recorder.is_paused()
+                and not self._sys_silence_warned
+            ):
+                if sys_lvl < 0.01:
+                    self._sys_silent_ticks += 1
+                else:
+                    self._sys_silent_ticks = 0
+                # ~5 s a 100 ms/tick
+                if self._sys_silent_ticks >= 50:
+                    self._sys_silence_warned = True
+                    self._status_label.setText(
+                        "Audio del sistema en silencio — si usas Bluetooth, "
+                        "cambia la salida a Altavoces"
+                    )
         else:
             self._sys_meter.setValue(int(self._monitor.system_level() * 100))
             self._mic_meter.setValue(int(self._monitor.mic_level() * 100))
@@ -1227,6 +1408,8 @@ class MainWindow(QMainWindow):
         # Detección de uso del micrófono por otras apps (~cada 1.5 s).
         if self._preview_counter % 15 == 0:
             self._update_mic_usage()
+            if not self._recorder.is_recording():
+                self._update_system_route_hint()
 
     def _update_mic_usage(self) -> None:
         try:

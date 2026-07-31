@@ -26,7 +26,7 @@
 
 ## Residual risks
 
-- **SC-002 ordering** still depends on local measurement; ASR turbo+beam1 vs turbo+beam5 is a modest gap — the large gap is diarization on/off. Short samples may compress differences.
+- **SC-002 ordering** still depends on local measurement; the large wall-clock gap is diarization on/off. Rápido uses the same beam as Equilibrado (5); greedy beam=1 was dropped after a real meeting showed extreme micro-segmentation / poor readability for little speed gain.
 - **First download** of `large-v3` for Máxima adds cold-start cost not reflected in “model speed” alone.
 - **Spanish meeting WER** not re-benchmarked here; turbo-as-Rápido ASR quality is assumed from public WER claims + current product default.
 - **Phase 2 daemon** remains design-only; complexity vs single-user value may justify “wontfix.”

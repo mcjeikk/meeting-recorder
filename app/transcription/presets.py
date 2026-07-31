@@ -30,11 +30,13 @@ PRESETS: Dict[str, TranscriptionPreset] = {
         id=PRESET_RAPIDO,
         label_es="Rápido",
         model="large-v3-turbo",
-        beam_size=1,
+        # beam=5: beam=1 ahorra poco y fragmenta/alucina mucho el texto legible.
+        # El ahorro real de Rápido es omitir la diarización (~½ del tiempo).
+        beam_size=5,
         no_diarize=True,
         hint_es=(
-            "Más rápido; sin etiquetas de hablantes; mismo motor de reconocimiento "
-            "que Equilibrado, búsqueda más ligera."
+            "Más rápido (sin diarización/hablantes); mismo reconocimiento que "
+            "Equilibrado."
         ),
     ),
     PRESET_EQUILIBRADO: TranscriptionPreset(

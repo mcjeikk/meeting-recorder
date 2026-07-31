@@ -28,7 +28,7 @@ $env:PYTHONIOENCODING = "utf-8"
 3. Restart app → last preset restored.
 4. Select **Rápido**, enable “Transcribir al terminar”, record ~30–60 s (or enqueue existing file).
 5. Inspect queue JSON under `%LOCALAPPDATA%\MeetingRecorder\transcripts\queue\` → `preset`/`model`/`beam_size`/`no_diarize` match Rápido.
-6. Inspect job log → argv contains `--model large-v3-turbo --beam-size 1 --no-diarize`.
+6. Inspect job log → argv contains `--model large-v3-turbo --beam-size 5 --no-diarize`.
 7. Result: transcript without speaker labels is OK for Rápido.
 8. Repeat once with **Equilibrado** and **Máxima calidad**; confirm CLI models both use recognition appropriately (`large-v3-turbo` beam 5 vs `large-v3` beam 5), no `--no-diarize` unless degraded retry.
 9. While a job is queued, change UI preset → queued job JSON unchanged.

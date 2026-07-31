@@ -34,7 +34,7 @@ class TestToCliArgs(unittest.TestCase):
     def test_rapido(self) -> None:
         self.assertEqual(
             to_cli_args(PRESET_RAPIDO),
-            ["--model", "large-v3-turbo", "--beam-size", "1", "--no-diarize"],
+            ["--model", "large-v3-turbo", "--beam-size", "5", "--no-diarize"],
         )
 
     def test_equilibrado(self) -> None:

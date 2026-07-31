@@ -20,7 +20,7 @@ Always argv list (never shell string). Env: `TRANSCRIPTOR_PLAIN=1`, `PYTHONIOENC
 
 | Job.preset | Extra argv |
 |------------|------------|
-| `rapido` | `--model large-v3-turbo --beam-size 1 --no-diarize` |
+| `rapido` | `--model large-v3-turbo --beam-size 5 --no-diarize` |
 | `equilibrado` | `--model large-v3-turbo --beam-size 5` |
 | `maxima_calidad` | `--model large-v3 --beam-size 5` |
 
