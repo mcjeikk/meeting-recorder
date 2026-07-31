@@ -128,6 +128,20 @@ _BUSY_BAR = (
 )
 
 
+def meter_display_levels(
+    mic_level: float,
+    system_level: float,
+    *,
+    mic_muted: bool,
+    system_enabled: bool,
+) -> tuple[float, float]:
+    """VU levels for the UI: inactive sources show as silence (empty bars)."""
+    return (
+        0.0 if mic_muted else float(mic_level),
+        0.0 if not system_enabled else float(system_level),
+    )
+
+
 def _make_dot_icon(color: str, size: int = 64) -> QIcon:
     """Genera un ícono circular (para la bandeja)."""
     pm = QPixmap(size, size)
@@ -1375,17 +1389,18 @@ class MainWindow(QMainWindow):
         self._timer_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
 
         # Medidores: del grabador si graba; del monitor en vivo si está inactivo.
+        # Mute / casilla de sistema apagan la barra aunque el monitor siga muestreando.
+        system_enabled = self._sys_check.isChecked()
         if self._recorder.is_recording():
-            sys_lvl = self._recorder.system_level()
-            self._sys_meter.setValue(int(sys_lvl * 100))
-            self._mic_meter.setValue(int(self._recorder.mic_level() * 100))
+            raw_sys = self._recorder.system_level()
+            raw_mic = self._recorder.mic_level()
             # Si Sistema sigue en silencio varios segundos, avisar (BT / salida mala).
             if (
-                self._sys_check.isChecked()
+                system_enabled
                 and not self._recorder.is_paused()
                 and not self._sys_silence_warned
             ):
-                if sys_lvl < 0.01:
+                if raw_sys < 0.01:
                     self._sys_silent_ticks += 1
                 else:
                     self._sys_silent_ticks = 0
@@ -1397,8 +1412,16 @@ class MainWindow(QMainWindow):
                         "cambia la salida a Altavoces"
                     )
         else:
-            self._sys_meter.setValue(int(self._monitor.system_level() * 100))
-            self._mic_meter.setValue(int(self._monitor.mic_level() * 100))
+            raw_sys = self._monitor.system_level()
+            raw_mic = self._monitor.mic_level()
+        mic_lvl, sys_lvl = meter_display_levels(
+            raw_mic,
+            raw_sys,
+            mic_muted=self._recorder.is_mic_muted(),
+            system_enabled=system_enabled,
+        )
+        self._mic_meter.setValue(int(mic_lvl * 100))
+        self._sys_meter.setValue(int(sys_lvl * 100))
 
         self._preview_counter += 1
         if self._recorder.is_recording():
