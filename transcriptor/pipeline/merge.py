@@ -48,3 +48,39 @@ def agrupar_en_bloques(items: list[dict], clave_texto: str, separador: str = "")
         # normaliza espacios (evita dobles espacios al concatenar)
         b["text"] = " ".join(texto.split())
     return bloques
+
+
+def fusionar_segmentos_cercanos(
+    segmentos: list[dict],
+    max_gap: float = 0.8,
+    max_block: float = 28.0,
+) -> list[dict]:
+    """Une segmentos ASR consecutivos cuando la pausa es corta.
+
+    Sin diarización, faster-whisper deja cientos/miles de micro-frases
+    ("O sea...", "Entonces...") que parecen una transcripción incompleta.
+    Agrupar por proximidad mejora la lectura del .txt/.srt sin inventar texto.
+    """
+    if not segmentos:
+        return []
+    out: list[dict] = []
+    cur = {
+        "start": segmentos[0]["start"],
+        "end": segmentos[0]["end"],
+        "text": (segmentos[0].get("text") or "").strip(),
+    }
+    for seg in segmentos[1:]:
+        gap = float(seg["start"]) - float(cur["end"])
+        nuevo_fin = float(seg["end"])
+        pieza = (seg.get("text") or "").strip()
+        if gap <= max_gap and (nuevo_fin - float(cur["start"])) <= max_block:
+            cur["end"] = nuevo_fin
+            if pieza:
+                cur["text"] = f"{cur['text']} {pieza}".strip() if cur["text"] else pieza
+        else:
+            cur["text"] = " ".join(cur["text"].split())
+            out.append(cur)
+            cur = {"start": seg["start"], "end": seg["end"], "text": pieza}
+    cur["text"] = " ".join(cur["text"].split())
+    out.append(cur)
+    return out

@@ -201,9 +201,13 @@ def procesar_archivo(archivo: Path, o: dict, hf_token: str | None) -> Path:
             bloques = merge_mod.agrupar_en_bloques(segmentos, "text", separador=" ")
         mapa = output_mod.construir_mapa_hablantes(bloques, o["nombres"])
     else:
+        # Sin hablantes: fusionar micro-segmentos cercanos para un .txt legible
+        # (p. ej. preset Rápido del Grabador con --no-diarize).
+        fusionados = merge_mod.fusionar_segmentos_cercanos(segmentos)
         bloques = [
             {"speaker": None, "start": s["start"], "end": s["end"], "text": s["text"].strip()}
-            for s in segmentos
+            for s in fusionados
+            if (s.get("text") or "").strip()
         ]
         mapa = {}
 
