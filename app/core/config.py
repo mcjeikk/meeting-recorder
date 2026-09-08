@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field, asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,50 @@ DEFAULT_FPS = 30
 DEFAULT_SAMPLE_RATE = 48_000          # 48 kHz: estándar de video; evita resampleos extra
 DEFAULT_VIDEO_BITRATE = "8M"           # razonable para 1080p/30
 
+# Nombre de archivo: basura de Windows + controles; deja margen para _timestamp.mp4.
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_MULTI_SPACE = re.compile(r"\s+")
+_MAX_NAME_COMPONENT = 80
+_RESERVED_FILENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+_DEFAULT_RECORDING_LABEL = "Grabacion"
+
+
+def sanitize_filename_component(
+    name: str, *, max_len: int = _MAX_NAME_COMPONENT
+) -> str:
+    """Quita caracteres inválidos en nombres de archivo de Windows.
+
+    Devuelve cadena vacía si no queda nada usable (el caller aplica fallback).
+    """
+    text = _INVALID_FILENAME_CHARS.sub("", (name or "").strip())
+    text = _MULTI_SPACE.sub(" ", text).strip(" .")
+    if len(text) > max_len:
+        text = text[:max_len].rstrip(" .")
+    if text.upper() in _RESERVED_FILENAMES:
+        return ""
+    return text
+
+
+def recording_stem(source: "VideoSource", when: Optional[datetime] = None) -> str:
+    """Base del MP4 (sin extensión): título de la fuente + timestamp.
+
+    Ventana → título del picker; pantalla → etiqueta visible (p. ej. Pantalla 1);
+    título vacío/inválido → Grabacion. El timestamp evita colisiones y mantiene
+    orden cronológico; la cola de transcripción usa este mismo stem vía el path.
+    """
+    ts = (when or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
+    if source.kind == "window":
+        label = sanitize_filename_component(source.title)
+    else:
+        label = sanitize_filename_component(source.label)
+    if not label:
+        label = _DEFAULT_RECORDING_LABEL
+    return f"{label}_{ts}"
+
 
 def default_output_dir() -> Path:
     """Carpeta de salida por defecto: ~/Videos/Grabaciones (o ~/Grabaciones)."""
@@ -26,6 +72,29 @@ def default_output_dir() -> Path:
     base = videos if videos.exists() else Path.home()
     out = base / "Grabaciones"
     return out
+
+
+def resolve_output_dir(raw: str | Path) -> Path:
+    """Carpeta de grabaciones como Path absoluto.
+
+    No sustituye el default de fábrica: si el usuario ya eligió una ruta, esa
+    es la fuente de verdad (aunque aún no exista en disco).
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("La carpeta de salida está vacía")
+    path = Path(text).expanduser()
+    try:
+        return path.resolve()
+    except OSError:
+        return path if path.is_absolute() else Path.cwd() / path
+
+
+def apply_selected_output_dir(cfg: "AppConfig", folder: str | Path) -> Path:
+    """Recuerda la carpeta elegida (absoluta) en la config en memoria."""
+    resolved = resolve_output_dir(folder)
+    cfg.output_dir = str(resolved)
+    return resolved
 
 
 def default_transcriptor_dir() -> str:

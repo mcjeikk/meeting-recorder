@@ -21,13 +21,12 @@ import shutil
 import sys
 import tempfile
 import threading
-from datetime import datetime
 from collections import OrderedDict
 from typing import Callable, List, Optional, Tuple
 
 from app.capture.base import VideoCapture
 from app.core.clock import MasterClock
-from app.core.config import AudioDevice, RecordingSettings, VideoSource
+from app.core.config import AudioDevice, RecordingSettings, VideoSource, recording_stem
 from app.encode.ffmpeg import (
     Segment,
     Track,
@@ -268,8 +267,8 @@ class Recorder:
             if self._settings.reduce_echo:
                 tracks = self._apply_aec_to_tracks(tracks)
 
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            out_path = str(self._settings.output_dir / f"Grabacion_{timestamp}.mp4")
+            stem = recording_stem(self._settings.video_source)
+            out_path = str(self._settings.output_dir / f"{stem}.mp4")
 
             self._on_status("Guardando…")
             mux_recording(

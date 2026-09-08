@@ -31,9 +31,9 @@ from app.transcription.worker import TranscriptionWorker
 
 def ultima_grabacion(cfg: AppConfig) -> Path:
     carpeta = Path(cfg.output_dir or ".")
-    candidatos = sorted(carpeta.glob("Grabacion_*.mp4"), key=lambda p: p.stat().st_mtime)
+    candidatos = sorted(carpeta.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
     if not candidatos:
-        raise SystemExit(f"No hay grabaciones Grabacion_*.mp4 en {carpeta}")
+        raise SystemExit(f"No hay grabaciones .mp4 en {carpeta}")
     return candidatos[-1]
 
 
