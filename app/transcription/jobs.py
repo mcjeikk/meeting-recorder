@@ -40,6 +40,15 @@ _ALLOWED_LANGUAGES = frozenset({"es", "en", "auto"})
 _EQ = get_preset(DEFAULT_PRESET)
 
 
+def _canonical_media_path(path: str) -> str:
+    """Ruta absoluta para el job y para --output (evita relativo → Transcriptor RAIZ)."""
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        p = Path(path).expanduser()
+        return str(p if p.is_absolute() else Path.cwd() / p)
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -142,13 +151,14 @@ class JobStore:
         `preset` se captura (snapshot) al encolar; cambios posteriores en la UI
         no mutan este job.
         """
+        media_path = _canonical_media_path(media_path)
         existente = self.find_by_media(media_path)
         if existente and (existente.status in _ACTIVE or existente.status == DONE):
             return None
         preset_id = normalize_preset(preset)
         p = get_preset(preset_id)
         job = TranscriptionJob(
-            media_path=str(media_path),
+            media_path=media_path,
             language=normalize_language(language),
             preset=preset_id,
             model=p.model,
@@ -160,9 +170,9 @@ class JobStore:
         return job
 
     def find_by_media(self, media_path: str) -> Optional[TranscriptionJob]:
-        objetivo = os.path.normcase(str(media_path))
+        objetivo = os.path.normcase(_canonical_media_path(media_path))
         for job in self.all():
-            if os.path.normcase(job.media_path) == objetivo:
+            if os.path.normcase(_canonical_media_path(job.media_path)) == objetivo:
                 return job
         return None
 

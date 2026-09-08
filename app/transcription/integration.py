@@ -198,14 +198,27 @@ def cpu_threads_for_job() -> int:
     return max(1, (os.cpu_count() or 4) - 2)
 
 
+def _absolute_media(media: Path) -> Path:
+    path = Path(media).expanduser()
+    try:
+        return path.resolve()
+    except OSError:
+        return path if path.is_absolute() else Path.cwd() / path
+
+
 def output_dir_for(media: Path) -> Path:
-    """Las transcripciones quedan junto a las grabaciones, descubribles a mano."""
-    return Path(media).parent / "Transcripciones"
+    """Las transcripciones quedan junto a las grabaciones, descubribles a mano.
+
+    Siempre absoluta: el CLI del Transcriptor hace `RAIZ / --output / stem`, y
+    una ruta relativa acaba DENTRO del proyecto hermano, no en Carpeta de salida.
+    """
+    return _absolute_media(media).parent / "Transcripciones"
 
 
 def result_dir_for(media: Path) -> Path:
     """Carpeta final de resultados de un MP4: <grabaciones>/Transcripciones/<stem>/."""
-    return output_dir_for(media) / Path(media).stem
+    media = _absolute_media(media)
+    return output_dir_for(media) / media.stem
 
 
 def transcribe(media_path: str, language: Optional[str] = "es") -> str:

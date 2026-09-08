@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal, QSize
+from PySide6.QtCore import Qt, QTimer, Signal, QSize, QEvent
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -48,13 +48,27 @@ from PySide6.QtWidgets import (
 )
 
 from app.capture.monitor import AudioMonitor
-from app.core.config import AppConfig, AudioDevice, RecordingSettings, VideoSource
+from app.core.config import (
+    AppConfig,
+    AudioDevice,
+    RecordingSettings,
+    VideoSource,
+    apply_selected_output_dir,
+    default_output_dir,
+    resolve_output_dir,
+)
 from app.core.mic_usage import (
     is_microphone_in_use_by_others,
     microphone_users,
     should_apply_follow_meeting_mute,
 )
 from app.core.orchestrator import Recorder
+from app.transcription.import_media import (
+    ALREADY_DONE,
+    enqueue_imports,
+    file_dialog_filter,
+    summarize_import_results,
+)
 from app.transcription.integration import is_available as transcriptor_disponible
 from app.transcription.jobs import JobStore, normalize_language
 from app.ui.device_watcher import DeviceChangeWatcher, hotplug_action
@@ -469,6 +483,20 @@ class MainWindow(QMainWindow):
         out_v.addLayout(out_btns)
         tx_wrap, self._tx_check = _wrapping_check("📝 Transcribir al terminar")
         out_v.addWidget(tx_wrap)
+        self._tx_file_btn = QPushButton("Transcribir archivo…")
+        self._tx_file_btn.setCursor(Qt.PointingHandCursor)
+        self._tx_file_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._tx_file_btn.clicked.connect(self._choose_transcribe_files)
+        out_v.addWidget(self._tx_file_btn)
+        self._tx_file_hint = _wrap_label(
+            "También puedes transcribir un audio o vídeo existente "
+            "(o arrastrarlo a la ventana). Velocidad e idioma de abajo aplican.",
+            muted=True,
+        )
+        out_v.addWidget(self._tx_file_hint)
+        self._tx_import_status = _wrap_label("", muted=True)
+        self._tx_import_status.setVisible(False)
+        out_v.addWidget(self._tx_import_status)
         preset_lbl = _wrap_label("Velocidad / calidad:", muted=True)
         self._tx_preset = QComboBox()
         _prep_combo(self._tx_preset)
@@ -617,9 +645,23 @@ class MainWindow(QMainWindow):
         self._scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCentralWidget(self._scroll)
         self._narrow = False
+        self.setAcceptDrops(True)
+        self._drop_overlay = QLabel("Suelta para transcribir", self)
+        self._drop_overlay.setAlignment(Qt.AlignCenter)
+        self._drop_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._drop_overlay.setStyleSheet(
+            "background: rgba(46, 204, 113, 0.28); color:#eafff2; "
+            "font-size:18px; font-weight:bold; border:2px dashed #2ecc71;"
+        )
+        self._drop_overlay.hide()
+        self._scroll.viewport().setAcceptDrops(True)
+        self._scroll.viewport().installEventFilter(self)
+        self._central.setAcceptDrops(True)
+        self._central.installEventFilter(self)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._sync_drop_overlay()
         # Umbral ~480: compactar márgenes. El reflow real lo hacen FlowLayout,
         # combos Expanding y word-wrap.
         narrow = event.size().width() < 480
@@ -630,6 +672,65 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_central") and self._central.layout() is not None:
             self._central.layout().setContentsMargins(m, m, m, m)
             self._central.layout().setSpacing(10 if narrow else 12)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        et = event.type()
+        if et == QEvent.DragEnter:
+            self.dragEnterEvent(event)
+            return event.isAccepted()
+        if et == QEvent.DragMove:
+            self.dragMoveEvent(event)
+            return event.isAccepted()
+        if et == QEvent.DragLeave:
+            self.dragLeaveEvent(event)
+            return True
+        if et == QEvent.Drop:
+            self.dropEvent(event)
+            return event.isAccepted()
+        return super().eventFilter(watched, event)
+
+    def _sync_drop_overlay(self) -> None:
+        overlay = getattr(self, "_drop_overlay", None)
+        if overlay is None:
+            return
+        overlay.setGeometry(self.rect())
+        overlay.raise_()
+
+    def _local_paths_from_mime(self, mime) -> List[str]:
+        if mime is None or not mime.hasUrls():
+            return []
+        paths: List[str] = []
+        for url in mime.urls():
+            if url.isLocalFile():
+                local = url.toLocalFile()
+                if local:
+                    paths.append(local)
+        return paths
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._local_paths_from_mime(event.mimeData()):
+            event.acceptProposedAction()
+            self._sync_drop_overlay()
+            self._drop_overlay.show()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self._local_paths_from_mime(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_overlay.hide()
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        paths = self._local_paths_from_mime(event.mimeData())
+        self._drop_overlay.hide()
+        event.acceptProposedAction()
+        if paths:
+            self._import_media_paths(paths)
 
     def _make_meter(self) -> QProgressBar:
         m = QProgressBar()
@@ -919,7 +1020,12 @@ class MainWindow(QMainWindow):
             self._sys_route_label.setText(info.get("warning") or "")
 
     def _apply_saved_config(self) -> None:
-        self._out_edit.setText(self._config.output_dir or str(Path.home()))
+        shown = self._config.output_dir or str(default_output_dir())
+        try:
+            shown = str(resolve_output_dir(shown))
+        except ValueError:
+            shown = str(Path.home())
+        self._out_edit.setText(shown)
         self._sys_check.setChecked(self._config.capture_system_audio)
         self._aec_check.setChecked(self._config.reduce_echo)
         disponible = transcriptor_disponible(self._config.transcriptor_dir)
@@ -927,6 +1033,7 @@ class MainWindow(QMainWindow):
         self._tx_check.setChecked(self._config.transcribe_after_recording and disponible)
         self._tx_preset.setEnabled(disponible)
         self._tx_lang.setEnabled(disponible)
+        self._tx_file_btn.setEnabled(disponible)
         if not disponible:
             tip = (
                 "No se encontró el proyecto Transcriptor.\n"
@@ -935,10 +1042,14 @@ class MainWindow(QMainWindow):
             self._tx_check.setToolTip(tip)
             self._tx_preset.setToolTip(tip)
             self._tx_lang.setToolTip(tip)
+            self._tx_file_btn.setToolTip(tip)
         else:
             self._tx_check.setToolTip("")
             self._tx_preset.setToolTip("")
             self._tx_lang.setToolTip("")
+            self._tx_file_btn.setToolTip(
+                "Transcribe un audio o vídeo que ya tengas; no hace falta grabar una reunión."
+            )
         self._set_preset_ui(self._config.transcription_preset, save=False)
         self._set_language_ui(self._config.transcription_language, save=False)
         self._auto_mute_check.blockSignals(True)
@@ -1078,18 +1189,57 @@ class MainWindow(QMainWindow):
         current = self._out_edit.text() or str(Path.home())
         folder = QFileDialog.getExistingDirectory(self, "Elige la carpeta de salida", current)
         if folder:
-            self._out_edit.setText(folder)
+            resolved = apply_selected_output_dir(self._config, folder)
+            self._out_edit.setText(str(resolved))
+            self._config.save()
+
+    def _choose_transcribe_files(self) -> None:
+        start = self._out_edit.text() or self._config.output_dir or str(Path.home())
+        files, _ok = QFileDialog.getOpenFileNames(
+            self,
+            "Transcribir archivo",
+            start,
+            file_dialog_filter(),
+        )
+        if files:
+            self._import_media_paths(files)
+
+    def _import_media_paths(self, paths: List[str]) -> None:
+        results = enqueue_imports(
+            paths,
+            store=self._tx_store,
+            enqueue=lambda media, language, preset: self._tx_worker.enqueue(
+                media, language, preset=preset
+            ),
+            language=normalize_language(
+                self._tx_lang.currentData() or self._config.transcription_language
+            ),
+            preset=normalize_preset(
+                self._tx_preset.currentData() or self._config.transcription_preset
+            ),
+            tool_available=transcriptor_disponible(self._config.transcriptor_dir),
+        )
+        summary = summarize_import_results(results)
+        if summary:
+            self._tx_import_status.setText(summary)
+            self._tx_import_status.setVisible(True)
+            if not self._recorder.is_recording():
+                self._set_status(summary)
+        done = next((r for r in results if r.kind == ALREADY_DONE and r.job), None)
+        if done and done.job and not self._tx_store.active():
+            self._on_tx_update(done.job)
 
     def _build_settings(self) -> RecordingSettings:
         source = self._source_combo.currentData()
         if not isinstance(source, VideoSource):
             source = VideoSource(kind="screen", monitor_index=1, is_primary=True)
+        raw = self._out_edit.text() or self._config.output_dir or str(default_output_dir())
         return RecordingSettings(
             video_source=source,
             mic_device=self._mic_combo.currentData(),
             capture_system_audio=self._sys_check.isChecked(),
             reduce_echo=self._aec_check.isChecked(),
-            output_dir=Path(self._out_edit.text()),
+            output_dir=resolve_output_dir(raw),
         )
 
     def _toggle_record(self) -> None:
@@ -1230,7 +1380,7 @@ class MainWindow(QMainWindow):
             self._mute_btn.setStyleSheet("")
 
     def _save_config(self, settings: RecordingSettings) -> None:
-        self._config.output_dir = str(settings.output_dir)
+        self._config.output_dir = str(resolve_output_dir(settings.output_dir))
         self._config.capture_system_audio = settings.capture_system_audio
         self._config.reduce_echo = settings.reduce_echo
         self._config.last_mic_name = settings.mic_device.name if settings.mic_device else ""
@@ -1367,6 +1517,8 @@ class MainWindow(QMainWindow):
     def _set_recording_ui(self, recording: bool) -> None:
         # Fuente de video bloqueada durante grabación; mic + refresh de mics
         # permanecen activos (cambio/refresh en vivo). C-RECORDING-GATES.
+        # Transcribir archivo… / drop siguen disponibles: solo se encola;
+        # el worker cede CPU (Recording Always Wins).
         for w in (self._source_combo, self._refresh_btn, self._sys_check):
             w.setEnabled(not recording)
         self._mic_combo.setEnabled(True)

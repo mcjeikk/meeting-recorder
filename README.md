@@ -146,7 +146,11 @@ Durante la captura se usan archivos temporales **MKV/WAV** (resistentes a cierre
 
 Marca la casilla **"📝 Transcribir al terminar"** (sección 4) y, al detener cada
 grabación, la app la transcribe sola con el proyecto **Transcriptor** (faster-whisper
-+ pyannote, en local). Los resultados quedan junto a tus videos:
++ pyannote, en local). También puedes transcribir **cualquier audio o vídeo que
+ya tengas** (podcast, exportación de llamada, grabación antigua, etc.) con
+**Transcribir archivo…** o arrastrando el archivo a la ventana: usa la misma
+cola, velocidad e idioma. El archivo original no se mueve; los resultados
+quedan junto a él (o junto a tus videos, si es una reunión):
 
 ```
 <carpeta de salida>\Transcripciones\<nombre_grabacion>\
@@ -164,9 +168,11 @@ grabación, la app la transcribe sola con el proyecto **Transcriptor** (faster-w
 - **Sobrevive al cierre de la app**: puedes cerrar el Grabador con una transcripción
   en curso; el proceso continúa solo y al reabrir la app se retoma el estado
   (la cola es persistente en `%LOCALAPPDATA%\MeetingRecorder\transcripts`).
-- **Cola y reintentos**: varias grabaciones se transcriben en orden, de a una. Si la
-  identificación de hablantes falla (memoria, token), se reintenta automáticamente
-  sin diarización en vez de perder horas de trabajo.
+- **Cola y reintentos**: varias grabaciones (y archivos importados) se transcriben
+  en orden, de a una. Si la identificación de hablantes falla (memoria, token), se
+  reintenta automáticamente sin diarización en vez de perder horas de trabajo.
+  Puedes encolar un archivo mientras grabas; el trabajo espera o se pausa hasta
+  que termine la captura.
 - **GPU automática**: hoy corre en CPU (~2x la duración del audio en este equipo).
   El día que el equipo tenga GPU NVIDIA, la usará solo, sin tocar configuración.
 - **Sin hablantes** en el resultado = falta el token de HuggingFace del Transcriptor

@@ -213,7 +213,7 @@ class TranscriptionWorker:
             return
         media = Path(job.media_path)
         if not media.exists():
-            self._fail(job, "El archivo de la grabación ya no existe", retry=False)
+            self._fail(job, "El archivo ya no existe", retry=False)
             return
 
         job.status = J.EXTRACTING
