@@ -106,6 +106,62 @@ class TestClassifyAndEnqueue(unittest.TestCase):
         self.assertEqual(r.kind, ALREADY_DONE)
         self.assertEqual(r.result_dir, job.result_dir)
 
+    def _write_transcript(self, base: Path, media: Path) -> Path:
+        destino = base / "Transcripciones" / media.stem
+        destino.mkdir(parents=True, exist_ok=True)
+        (destino / "transcripcion.txt").write_text("texto", encoding="utf-8")
+        return destino
+
+    def test_transcript_on_disk_counts_without_a_record(self) -> None:
+        """Spec 023: al podar el histórico, el disco es quien recuerda."""
+        salida = self.root / "salida"
+        destino = self._write_transcript(salida, self.media)
+        r = classify_import(
+            self.store, str(self.media), tool_available=True, output_base=str(salida)
+        )
+        self.assertEqual(r.kind, ALREADY_DONE)
+        self.assertEqual(Path(r.result_dir), destino.resolve())
+        self.assertIn("Ya hay una transcripción", r.message)
+
+    def test_deleted_transcript_is_queued_again(self) -> None:
+        salida = self.root / "salida"
+        r = classify_import(
+            self.store, str(self.media), tool_available=True, output_base=str(salida)
+        )
+        self.assertEqual(r.kind, OK)
+
+    def test_pruned_record_with_transcript_is_not_re_enqueued(self) -> None:
+        salida = self.root / "salida"
+        self._write_transcript(salida, self.media)
+        results = enqueue_imports(
+            [str(self.media)],
+            store=self.store,
+            enqueue=self._enqueue_fn(),
+            language="es",
+            preset="equilibrado",
+            tool_available=True,
+            output_base=str(salida),
+        )
+        self.assertEqual([r.kind for r in results], [ALREADY_DONE])
+        self.assertEqual(self.store.all(), [])
+        self.assertIn("ya había transcripción", summarize_import_results(results))
+
+    def test_existing_record_still_wins(self) -> None:
+        """El registro sigue primero: trae la carpeta y el snapshot del job."""
+        salida = self.root / "salida"
+        self._write_transcript(salida, self.media)
+        job = self.store.enqueue(canonical_media_path(self.media), "es")
+        assert job is not None
+        job.status = DONE
+        job.result_dir = str(self.root / "otra" / "carpeta")
+        self.store.save(job)
+        r = classify_import(
+            self.store, str(self.media), tool_available=True, output_base=str(salida)
+        )
+        self.assertEqual(r.kind, ALREADY_DONE)
+        self.assertEqual(r.result_dir, job.result_dir)
+        self.assertIsNotNone(r.job)
+
     def test_enqueue_does_not_copy_original(self) -> None:
         before = self.media.read_bytes()
         results = enqueue_imports(
@@ -190,6 +246,9 @@ class TestImportButtonHeadless(unittest.TestCase):
         try:
             self.assertTrue(hasattr(w, "_tx_file_btn"))
             self.assertIn("Transcribir archivo", w._tx_file_btn.text())
+            self.assertTrue(hasattr(w, "_tx_queue_list"))
+            self.assertTrue(hasattr(w, "_tx_speakers"))
+            self.assertIn("Carpeta de salida", w._tx_file_hint.text())
             self.assertTrue(w.acceptDrops())
             w._tx_file_btn.setEnabled(True)
             w._set_recording_ui(True)

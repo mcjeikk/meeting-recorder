@@ -26,6 +26,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -35,6 +36,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -57,6 +60,12 @@ from app.core.config import (
     default_output_dir,
     resolve_output_dir,
 )
+from app.core.output_path import (
+    dest_file_path,
+    ffmpeg_path_too_long,
+    folder_looks_unusable,
+    load_pending,
+)
 from app.core.mic_usage import (
     is_microphone_in_use_by_others,
     microphone_users,
@@ -70,9 +79,22 @@ from app.transcription.import_media import (
     summarize_import_results,
 )
 from app.transcription.integration import is_available as transcriptor_disponible
-from app.transcription.jobs import JobStore, normalize_language
+from app.transcription.jobs import JobStore, normalize_language, normalize_num_speakers
+from app.transcription.queue_status import (
+    batch_eta_text,
+    batch_suffix,
+    eta_suffix,
+    format_queue_line,
+    visible_queue_jobs,
+)
 from app.ui.device_watcher import DeviceChangeWatcher, hotplug_action
 from app.ui.flow_layout import FlowLayout
+from app.ui.scroll_guard import guard_wheel_unless_focused
+from app.transcription.pc_impact import (
+    PC_IMPACT_ORDER,
+    get_pc_impact,
+    normalize_pc_impact,
+)
 from app.transcription.presets import (
     PRESET_ORDER,
     get_preset,
@@ -80,12 +102,17 @@ from app.transcription.presets import (
 )
 from app.transcription.worker import TranscriptionWorker
 from app.ui.hotkeys import GlobalHotkeys
-
+from app.ui.capture_affinity import apply_window_capture_affinity
+from app.ui.preview_policy import (
+    should_pause_idle_wgc_preview,
+    transcription_status_is_open,
+)
 # --- Paleta y estilos (tema oscuro) -----------------------------------------
 _ACCENT = "#2ecc71"
 _DANGER = "#e74c3c"
 _STYLE = f"""
 QMainWindow, QWidget#central {{ background:#1e1f24; }}
+QScrollArea {{ background:#1e1f24; border: none; }}
 QLabel {{ color:#e6e6e6; }}
 QLabel#muted {{ color:#9aa0a8; }}
 QGroupBox {{
@@ -99,6 +126,12 @@ QComboBox, QLineEdit {{
 }}
 QComboBox:disabled {{ color:#6b7077; }}
 QComboBox QAbstractItemView {{ background:#1a1b1f; color:#e6e6e6; selection-background-color:#2ecc71; }}
+QListWidget {{
+    background:#1a1b1f; color:#e6e6e6; border:1px solid #34373f;
+    border-radius:6px; outline: 0;
+}}
+QListWidget::item {{ color:#e6e6e6; padding:4px 8px; }}
+QListWidget::item:selected {{ background:#34373f; }}
 QPushButton {{
     background:#34373f; color:#e6e6e6; border:none; border-radius:6px; padding:8px 12px;
 }}
@@ -116,7 +149,6 @@ QFrame#banner {{ background:#163b29; border:1px solid #1e9e54; border-radius:8px
 QFrame#banner QLabel {{ color:#eafff2; font-weight:bold; }}
 """
 
-# Estilo para que los diálogos (errores/preguntas) sean legibles sobre tema oscuro.
 _MSGBOX_QSS = (
     "QMessageBox { background:#23252b; }"
     "QMessageBox QLabel { color:#e8e8e8; font-size:13px; }"
@@ -177,11 +209,13 @@ def app_icon() -> QIcon:
     return _make_dot_icon(_DANGER)
 
 
-def _prep_combo(combo: QComboBox) -> None:
-    """Evita que el ítem más largo del combo fije el ancho mínimo de la ventana."""
+def _prep_combo(combo: QComboBox, owner=None) -> None:
+    """Combo elástico; la rueda no cambia el valor si el control no tiene foco."""
     combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
     combo.setMinimumContentsLength(10)
     combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    if owner is not None:
+        guard_wheel_unless_focused(combo, owner)
 
 
 class _WrapLabel(QLabel):
@@ -239,6 +273,7 @@ class MainWindow(QMainWindow):
     _status_sig = Signal(str)
     _finished_sig = Signal(str)
     _error_sig = Signal(str)
+    _save_failed_sig = Signal(str)
     _started_sig = Signal()
     _progress_sig = Signal(int)
     _tx_update_sig = Signal(dict)  # snapshots del worker de transcripción
@@ -285,10 +320,12 @@ class MainWindow(QMainWindow):
             on_finished=self._finished_sig.emit,
             on_error=self._error_sig.emit,
             on_progress=self._progress_sig.emit,
+            on_save_failed=self._save_failed_sig.emit,
         )
         self._status_sig.connect(self._set_status)
         self._finished_sig.connect(self._on_finished)
         self._error_sig.connect(self._on_error)
+        self._save_failed_sig.connect(self._on_save_failed)
         self._started_sig.connect(self._on_started)
         self._progress_sig.connect(self._on_progress)
         self._busy = False
@@ -330,6 +367,10 @@ class MainWindow(QMainWindow):
         # Arranca el worker DESPUÉS de construir la UI: reconcilia trabajos
         # pendientes de sesiones anteriores y los retoma solo.
         self._tx_worker.start()
+        try:
+            self._tx_worker.apply_pc_impact(self._config.transcription_pc_impact)
+        except Exception:
+            pass
 
         self._timer = QTimer(self)
         self._timer.setInterval(100)
@@ -339,6 +380,7 @@ class MainWindow(QMainWindow):
         # Pre-cargar la detección de encoder en segundo plano para que el PRIMER
         # "Grabar" sea inmediato (si no, la primera vez tardaría ~1 s probando).
         threading.Thread(target=self._prewarm_encoder, daemon=True).start()
+        QTimer.singleShot(0, self._offer_pending_save)
 
     def _prewarm_encoder(self) -> None:
         try:
@@ -356,7 +398,6 @@ class MainWindow(QMainWindow):
         root.setSpacing(12)
         root.setContentsMargins(16, 16, 16, 16)
 
-        # Encabezado con indicador de grabación
         header = QHBoxLayout()
         title = _wrap_label("Grabador de Reuniones")
         title.setStyleSheet("font-size:18px; font-weight:bold;")
@@ -367,26 +408,21 @@ class MainWindow(QMainWindow):
         header.addWidget(self._rec_dot, 0, Qt.AlignTop)
         root.addLayout(header)
 
-        # Vista previa
         prev_box = QGroupBox("Vista previa")
         prev_lay = QVBoxLayout(prev_box)
         self._preview = QLabel("Sin vista previa")
         self._preview.setObjectName("muted")
         self._preview.setAlignment(Qt.AlignCenter)
-        # Elástica (no fija): es el ÚNICO widget que cede alto, así la ventana
-        # sí puede encogerse/estirarse verticalmente. El mínimo explícito evita
-        # que el pixmap (sizeHint del QLabel) bloquee el encogimiento.
         self._preview.setMinimumSize(160, 120)
         self._preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._preview.setStyleSheet("background:#15161a; border-radius:8px;")
         prev_lay.addWidget(self._preview)
         root.addWidget(prev_box, 1)
 
-        # 1. Fuente — combo a ancho completo; botones en FlowLayout (reflow).
         src_box = QGroupBox("1. Fuente de captura")
         src_lay = QVBoxLayout(src_box)
         self._source_combo = QComboBox()
-        _prep_combo(self._source_combo)
+        _prep_combo(self._source_combo, self)
         self._source_combo.currentIndexChanged.connect(self._update_preview)
         self._refresh_btn = QPushButton("🔄 Actualizar")
         self._refresh_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -395,13 +431,22 @@ class MainWindow(QMainWindow):
         src_btns = FlowLayout(h_spacing=8, v_spacing=6)
         src_btns.addWidget(self._refresh_btn)
         src_lay.addLayout(src_btns)
+        hide_wrap, self._hide_self_check = _wrapping_check(
+            "No capturar esta ventana"
+        )
+        self._hide_self_check.setToolTip(
+            "Marcado: el Grabador no aparece en la grabación ni en recortes "
+            "(Win+Shift+S). Desmárcalo si quieres que se vea en la imagen."
+        )
+        self._hide_self_check.setChecked(True)
+        self._hide_self_check.toggled.connect(self._on_hide_self_toggled)
+        src_lay.addWidget(hide_wrap)
         root.addWidget(src_box)
 
-        # 2. Micrófono (se puede cambiar en vivo y silenciar)
         mic_box = QGroupBox("2. Micrófono")
         mic_lay = QVBoxLayout(mic_box)
         self._mic_combo = QComboBox()
-        _prep_combo(self._mic_combo)
+        _prep_combo(self._mic_combo, self)
         self._mic_combo.activated.connect(self._on_mic_activated)
         self._mic_refresh_btn = QPushButton("🔄 Actualizar")
         self._mic_refresh_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -420,7 +465,6 @@ class MainWindow(QMainWindow):
         mic_lay.addWidget(
             _wrap_label("Cámbialo o siléncialo durante la grabación.", muted=True)
         )
-        # Indicador informativo: ¿alguna app (Teams/Zoom/Meet) está en llamada?
         self._mic_usage_label = _wrap_label("Micrófono del sistema: …", muted=True)
         mic_lay.addWidget(self._mic_usage_label)
         auto_wrap, self._auto_mute_check = _wrapping_check(
@@ -433,29 +477,20 @@ class MainWindow(QMainWindow):
             "Solo actúa al entrar/salir de llamada: un mute manual durante la "
             "llamada se respeta hasta el siguiente cambio de estado.\n\n"
             "No detecta el botón de mute DENTRO de Teams: si Teams sigue "
-            "capturando el mic, Windows cree que hay llamada. Para eso usa 🔇 "
-            "o Ctrl+Shift+M."
+            "capturando el mic, Windows cree que hay llamada. Para eso usa "
+            "🔇 o Ctrl+Shift+M."
         )
         self._auto_mute_check.toggled.connect(self._on_auto_mute_toggled)
         mic_lay.addWidget(auto_wrap)
-        mic_lay.addWidget(
-            _wrap_label(
-                "Silencia TU pista de grabación cuando Windows no ve ninguna app de "
-                "reunión en el mic; la reactiva al detectar llamada. El mute manual "
-                "se respeta hasta el siguiente cambio de llamada. No sigue el mute "
-                "interno de Teams — usa 🔇 / Ctrl+Shift+M para eso.",
-                muted=True,
-            )
-        )
         root.addWidget(mic_box)
 
-        # 3. Audio del sistema
         sys_box = QGroupBox("3. Audio del sistema")
         sys_lay = QVBoxLayout(sys_box)
         sys_lay.addWidget(
             _wrap_label("Lo que escuchas en la reunión / escritorio.", muted=True)
         )
         sys_wrap, self._sys_check = _wrapping_check("Grabar el audio del sistema")
+        self._sys_check.setToolTip("Lo que escuchas en la reunión o el escritorio.")
         self._sys_check.setChecked(True)
         self._sys_meter = self._make_meter()
         sys_lay.addWidget(sys_wrap)
@@ -468,7 +503,6 @@ class MainWindow(QMainWindow):
         sys_lay.addWidget(aec_wrap)
         root.addWidget(sys_box)
 
-        # 4. Carpeta de salida + transcripción automática
         out_box = QGroupBox("4. Carpeta de salida")
         out_v = QVBoxLayout(out_box)
         self._out_edit = QLineEdit()
@@ -486,38 +520,67 @@ class MainWindow(QMainWindow):
         self._tx_file_btn = QPushButton("Transcribir archivo…")
         self._tx_file_btn.setCursor(Qt.PointingHandCursor)
         self._tx_file_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._tx_file_btn.setToolTip(
+            "El original no se mueve. La transcripción va a Carpeta de salida"
+            "\\Transcripciones."
+        )
         self._tx_file_btn.clicked.connect(self._choose_transcribe_files)
         out_v.addWidget(self._tx_file_btn)
         self._tx_file_hint = _wrap_label(
-            "También puedes transcribir un audio o vídeo existente "
-            "(o arrastrarlo a la ventana). Velocidad e idioma de abajo aplican.",
+            "Suelta un archivo: va a Carpeta de salida\\Transcripciones.",
             muted=True,
         )
         out_v.addWidget(self._tx_file_hint)
         self._tx_import_status = _wrap_label("", muted=True)
         self._tx_import_status.setVisible(False)
         out_v.addWidget(self._tx_import_status)
-        preset_lbl = _wrap_label("Velocidad / calidad:", muted=True)
+        self._tx_queue_list = QListWidget()
+        self._tx_queue_list.setMinimumHeight(48)
+        self._tx_queue_list.setMaximumHeight(96)
+        self._tx_queue_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self._tx_queue_list.itemSelectionChanged.connect(self._on_tx_queue_selected)
+        self._tx_queue_list.setVisible(False)
+        out_v.addWidget(self._tx_queue_list)
+        self._tx_queue_empty = _wrap_label("Nada en cola.", muted=True)
+        self._tx_queue_empty.setVisible(False)
+        out_v.addWidget(self._tx_queue_empty)
+        out_v.addWidget(_wrap_label("Velocidad / calidad:", muted=True))
         self._tx_preset = QComboBox()
-        _prep_combo(self._tx_preset)
+        _prep_combo(self._tx_preset, self)
         for pid in PRESET_ORDER:
             self._tx_preset.addItem(get_preset(pid).label_es, pid)
         self._tx_preset.currentIndexChanged.connect(self._on_preset_changed)
-        out_v.addWidget(preset_lbl)
         out_v.addWidget(self._tx_preset)
-        self._tx_preset_hint = _wrap_label("", muted=True)
-        out_v.addWidget(self._tx_preset_hint)
-        lang_lbl = _wrap_label("Idioma:", muted=True)
+        out_v.addWidget(_wrap_label("Uso del PC:", muted=True))
+        self._tx_impact = QComboBox()
+        _prep_combo(self._tx_impact, self)
+        for iid in PC_IMPACT_ORDER:
+            self._tx_impact.addItem(get_pc_impact(iid).label_es, iid)
+        self._tx_impact.currentIndexChanged.connect(self._on_pc_impact_changed)
+        out_v.addWidget(self._tx_impact)
+        out_v.addWidget(_wrap_label("Idioma:", muted=True))
         self._tx_lang = QComboBox()
-        _prep_combo(self._tx_lang)
+        _prep_combo(self._tx_lang, self)
         for label, code in (("Español", "es"), ("English", "en"), ("Auto", "auto")):
             self._tx_lang.addItem(label, code)
         self._tx_lang.currentIndexChanged.connect(self._on_language_changed)
-        out_v.addWidget(lang_lbl)
         out_v.addWidget(self._tx_lang)
+        out_v.addWidget(_wrap_label("Hablantes:", muted=True))
+        self._tx_speakers = QComboBox()
+        _prep_combo(self._tx_speakers, self)
+        self._tx_speakers.addItem("Auto (detectar)", 0)
+        for n in (2, 3, 4, 5, 6):
+            self._tx_speakers.addItem(f"{n}", n)
+        self._tx_speakers.currentIndexChanged.connect(self._on_speakers_changed)
+        self._tx_speakers.setToolTip(
+            "Si lo sabes (entrevista 1 a 1 = 2) acelera y etiqueta mejor. "
+            "Si no, deja Auto. Equilibrado/Máxima identifican hablantes."
+        )
+        out_v.addWidget(self._tx_speakers)
         root.addWidget(out_box)
 
-        # 5. Botones de grabación (reflow si no caben en una fila)
         self._btn_flow = FlowLayout(h_spacing=8, v_spacing=8)
         self._record_btn = QPushButton("●  Grabar")
         self._record_btn.setStyleSheet(_RECORD_BTN)
@@ -539,7 +602,6 @@ class MainWindow(QMainWindow):
         self._btn_flow.addWidget(self._pause_btn)
         root.addLayout(self._btn_flow)
 
-        # Estado
         status_col = QVBoxLayout()
         status_col.setSpacing(2)
         self._timer_label = QLabel("00:00:00")
@@ -549,16 +611,14 @@ class MainWindow(QMainWindow):
         status_col.addWidget(self._status_label)
         root.addLayout(status_col)
 
-        # Barra de actividad (spinner) para iniciar / procesar sin congelar.
         self._busy_bar = QProgressBar()
-        self._busy_bar.setRange(0, 0)            # indeterminado = "ocupado"
+        self._busy_bar.setRange(0, 0)
         self._busy_bar.setTextVisible(False)
         self._busy_bar.setFixedHeight(6)
         self._busy_bar.setStyleSheet(_BUSY_BAR)
         self._busy_bar.setVisible(False)
         root.addWidget(self._busy_bar)
 
-        # Aviso de resultado: texto arriba, acciones en FlowLayout.
         self._result_banner = QFrame()
         self._result_banner.setObjectName("banner")
         bl = QVBoxLayout(self._result_banner)
@@ -582,7 +642,6 @@ class MainWindow(QMainWindow):
         self._result_banner.setVisible(False)
         root.addWidget(self._result_banner)
 
-        # Estado de la transcripción (misma estética que el banner de resultado).
         self._tx_banner = QFrame()
         self._tx_banner.setObjectName("banner")
         tx_outer = QVBoxLayout(self._tx_banner)
@@ -592,10 +651,13 @@ class MainWindow(QMainWindow):
         tx_col = QVBoxLayout()
         tx_col.setSpacing(4)
         self._tx_label = _wrap_label("")
+        self._tx_queue_hint = _wrap_label("", muted=True)
+        self._tx_queue_hint.setVisible(False)
         self._tx_bar = QProgressBar()
         self._tx_bar.setTextVisible(False)
         self._tx_bar.setFixedHeight(6)
         tx_col.addWidget(self._tx_label)
+        tx_col.addWidget(self._tx_queue_hint)
         tx_col.addWidget(self._tx_bar)
         tx_close = QPushButton("✕")
         tx_close.setMaximumWidth(36)
@@ -606,7 +668,7 @@ class MainWindow(QMainWindow):
         tx_top.addWidget(tx_close, 0, Qt.AlignTop)
         tx_outer.addLayout(tx_top)
         tx_btns = FlowLayout(h_spacing=8, v_spacing=6)
-        self._tx_open_btn = QPushButton("📄 Abrir")
+        self._tx_open_btn = QPushButton("📂 Abrir")
         self._tx_open_btn.setCursor(Qt.PointingHandCursor)
         self._tx_open_btn.clicked.connect(self._open_transcription)
         self._tx_cancel_btn = QPushButton("Cancelar")
@@ -630,8 +692,6 @@ class MainWindow(QMainWindow):
         self._tx_banner.setVisible(False)
         root.addWidget(self._tx_banner)
 
-        # QScrollArea: el mínimo de la ventana no sigue el sizeHint del contenido.
-        # Preferimos reflow; el scroll horizontal queda como último recurso.
         self._central = central
         self._scroll = QScrollArea()
         central.setMinimumWidth(0)
@@ -658,12 +718,12 @@ class MainWindow(QMainWindow):
         self._scroll.viewport().installEventFilter(self)
         self._central.setAcceptDrops(True)
         self._central.installEventFilter(self)
+        self._preview.setAcceptDrops(True)
+        self._preview.installEventFilter(self)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._sync_drop_overlay()
-        # Umbral ~480: compactar márgenes. El reflow real lo hacen FlowLayout,
-        # combos Expanding y word-wrap.
         narrow = event.size().width() < 480
         if narrow == getattr(self, "_narrow", False):
             return
@@ -820,10 +880,8 @@ class MainWindow(QMainWindow):
                 self._hotkeys.register(int(self.winId()))
             except Exception:
                 pass
-            # Excluir esta ventana de la captura: el recorder NO aparece en la
-            # grabación, pero sigue visible y usable para ti.
-            self._exclude_from_capture()
             self._hotkeys_registered = True
+        self._apply_capture_affinity()
         # Medidores en vivo mientras la ventana está visible y no se graba.
         self._start_monitor()
         self._update_system_route_hint()
@@ -846,18 +904,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _exclude_from_capture(self) -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            import ctypes
+    def _apply_capture_affinity(self) -> None:
+        """Aplica si esta ventana se oculta o no de grabaciones/capturas."""
+        apply_window_capture_affinity(
+            int(self.winId()) if self.winId() else None,
+            bool(self._config.exclude_window_from_capture),
+        )
 
-            WDA_EXCLUDEFROMCAPTURE = 0x11
-            ctypes.windll.user32.SetWindowDisplayAffinity(
-                int(self.winId()), WDA_EXCLUDEFROMCAPTURE
-            )
-        except Exception:
-            pass
+    def _on_hide_self_toggled(self, checked: bool) -> None:
+        self._config.exclude_window_from_capture = bool(checked)
+        self._config.save()
+        self._apply_capture_affinity()
 
     # --- poblar selectores ---------------------------------------------------
     def _on_refresh(self) -> None:
@@ -1011,13 +1068,16 @@ class MainWindow(QMainWindow):
             self._sys_route_label.setText("")
             return
         if info.get("warning"):
-            self._sys_route_label.setText("⚠ " + info["warning"])
+            text = "⚠ " + info["warning"]
+            self._sys_route_label.setText(text)
+            self._sys_route_label.setToolTip(text)
         elif info.get("ok") and info.get("output_name"):
-            self._sys_route_label.setText(
-                f"Capturando loopback de: {info['output_name']}"
-            )
+            text = f"Capturando loopback de: {info['output_name']}"
+            self._sys_route_label.setText(text)
+            self._sys_route_label.setToolTip(text)
         else:
             self._sys_route_label.setText(info.get("warning") or "")
+            self._sys_route_label.setToolTip(self._sys_route_label.text())
 
     def _apply_saved_config(self) -> None:
         shown = self._config.output_dir or str(default_output_dir())
@@ -1028,30 +1088,41 @@ class MainWindow(QMainWindow):
         self._out_edit.setText(shown)
         self._sys_check.setChecked(self._config.capture_system_audio)
         self._aec_check.setChecked(self._config.reduce_echo)
+        self._hide_self_check.blockSignals(True)
+        self._hide_self_check.setChecked(bool(self._config.exclude_window_from_capture))
+        self._hide_self_check.blockSignals(False)
         disponible = transcriptor_disponible(self._config.transcriptor_dir)
         self._tx_check.setEnabled(disponible)
         self._tx_check.setChecked(self._config.transcribe_after_recording and disponible)
         self._tx_preset.setEnabled(disponible)
+        self._tx_impact.setEnabled(disponible)
         self._tx_lang.setEnabled(disponible)
+        self._tx_speakers.setEnabled(disponible)
         self._tx_file_btn.setEnabled(disponible)
+        self._set_preset_ui(self._config.transcription_preset, save=False)
+        self._set_pc_impact_ui(self._config.transcription_pc_impact, save=False)
+        self._set_language_ui(self._config.transcription_language, save=False)
+        self._set_speakers_ui(self._config.transcription_num_speakers, save=False)
         if not disponible:
             tip = (
                 "No se encontró el proyecto Transcriptor.\n"
                 "Revisa 'transcriptor_dir' en %APPDATA%\\MeetingRecorder\\config.json"
             )
-            self._tx_check.setToolTip(tip)
-            self._tx_preset.setToolTip(tip)
-            self._tx_lang.setToolTip(tip)
-            self._tx_file_btn.setToolTip(tip)
+            for w in (
+                self._tx_check,
+                self._tx_preset,
+                self._tx_impact,
+                self._tx_lang,
+                self._tx_speakers,
+                self._tx_file_btn,
+            ):
+                w.setToolTip(tip)
         else:
             self._tx_check.setToolTip("")
-            self._tx_preset.setToolTip("")
-            self._tx_lang.setToolTip("")
             self._tx_file_btn.setToolTip(
                 "Transcribe un audio o vídeo que ya tengas; no hace falta grabar una reunión."
             )
-        self._set_preset_ui(self._config.transcription_preset, save=False)
-        self._set_language_ui(self._config.transcription_language, save=False)
+        self._refresh_tx_queue()
         self._auto_mute_check.blockSignals(True)
         self._auto_mute_check.setChecked(bool(self._config.auto_mute_follow_meeting))
         self._auto_mute_check.blockSignals(False)
@@ -1068,7 +1139,7 @@ class MainWindow(QMainWindow):
             self._tx_preset.setCurrentIndex(idx)
         self._tx_preset.blockSignals(False)
         p = get_preset(pid)
-        self._tx_preset_hint.setText(p.hint_es)
+        self._tx_preset.setToolTip(p.hint_es)
         self._config.transcription_preset = pid
         if save:
             self._config.save()
@@ -1078,6 +1149,28 @@ class MainWindow(QMainWindow):
         if pid is None:
             return
         self._set_preset_ui(pid, save=True)
+
+    def _set_pc_impact_ui(self, profile_id: object, *, save: bool) -> None:
+        iid = normalize_pc_impact(profile_id)
+        idx = self._tx_impact.findData(iid)
+        self._tx_impact.blockSignals(True)
+        if idx >= 0:
+            self._tx_impact.setCurrentIndex(idx)
+        self._tx_impact.blockSignals(False)
+        self._tx_impact.setToolTip(get_pc_impact(iid).hint_es)
+        self._config.transcription_pc_impact = iid
+        if save:
+            self._config.save()
+
+    def _on_pc_impact_changed(self, _index: int = 0) -> None:
+        iid = self._tx_impact.currentData()
+        if iid is None:
+            return
+        self._set_pc_impact_ui(iid, save=True)
+        try:
+            self._tx_worker.apply_pc_impact(iid)
+        except Exception:
+            pass
 
     def _set_language_ui(self, language: object, *, save: bool) -> None:
         code = normalize_language(language)
@@ -1096,11 +1189,39 @@ class MainWindow(QMainWindow):
             return
         self._set_language_ui(code, save=True)
 
+    def _set_speakers_ui(self, count: object, *, save: bool) -> None:
+        n = normalize_num_speakers(count)
+        idx = self._tx_speakers.findData(n)
+        self._tx_speakers.blockSignals(True)
+        if idx >= 0:
+            self._tx_speakers.setCurrentIndex(idx)
+        else:
+            self._tx_speakers.setCurrentIndex(0)
+        self._tx_speakers.blockSignals(False)
+        self._config.transcription_num_speakers = n
+        if save:
+            self._config.save()
+
+    def _on_speakers_changed(self, _index: int = 0) -> None:
+        self._set_speakers_ui(self._tx_speakers.currentData(), save=True)
+
     # --- vista previa --------------------------------------------------------
+    def _transcription_open(self) -> bool:
+        if self._tx_worker.has_active_job():
+            return True
+        return transcription_status_is_open(self._tx_last.get("status"))
+
     def _update_preview(self) -> None:
         """Actualiza la miniatura sin bloquear el hilo Qt en grabs WGC."""
         try:
             source = self._source_combo.currentData()
+            # Idle WGC + Intel GPU + transcripción = APPCRASH en igd10um64xe.DLL.
+            if should_pause_idle_wgc_preview(
+                recording=self._recorder.is_recording(),
+                transcription_open=self._transcription_open(),
+            ):
+                self._preview_dirty = False
+                return
             # Durante grabación el backend ya tiene el frame — barato, síncrono.
             # No abrir otra sesión WGC de preview encima de la captura activa.
             if self._recorder.is_recording():
@@ -1170,11 +1291,11 @@ class MainWindow(QMainWindow):
             self._update_preview()
 
     def _set_preview_pixmap(self, pm: QPixmap) -> None:
-        scaled = pm.scaled(
-            self._preview.width(), self._preview.height(),
-            Qt.KeepAspectRatio, Qt.FastTransformation,
+        tw = max(1, self._preview.width())
+        th = max(1, self._preview.height())
+        self._preview.setPixmap(
+            pm.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self._preview.setPixmap(scaled)
 
     def _bgra_to_qimage(self, frame) -> QImage:
         """Convierte un fotograma BGRA (numpy) a QImage opaco (seguro off-thread)."""
@@ -1193,6 +1314,86 @@ class MainWindow(QMainWindow):
             self._out_edit.setText(str(resolved))
             self._config.save()
 
+    def _ensure_output_folder_for_record(self) -> bool:
+        """Exige carpeta de salida; si la ruta es larga, ofrece corregirla."""
+        raw = (self._out_edit.text() or self._config.output_dir or "").strip()
+        bad = folder_looks_unusable(raw)
+        if bad:
+            self._dialog(QMessageBox.Warning, "Carpeta de salida", bad).exec()
+            self._choose_output()
+            raw = (self._out_edit.text() or "").strip()
+            if folder_looks_unusable(raw):
+                self._dialog(
+                    QMessageBox.Critical,
+                    "Carpeta de salida",
+                    "No se puede grabar sin una carpeta de salida. Elige una y vuelve a intentar.",
+                ).exec()
+                return False
+        try:
+            folder = resolve_output_dir(raw)
+        except Exception as exc:
+            self._dialog(QMessageBox.Critical, "Carpeta de salida", str(exc)).exec()
+            return False
+        probe = dest_file_path(folder, "Grabacion_2099-12-31_23-59-59")
+        if ffmpeg_path_too_long(probe) or ffmpeg_path_too_long(folder):
+            box = self._dialog(
+                QMessageBox.Warning,
+                "Ruta demasiado larga",
+                "Esta carpeta es demasiado larga para Windows y puede impedir guardar el MP4 "
+                "(pasó el 9-sep-2026 con una ruta de OneDrive).\n\n"
+                "¿Elegir ahora una carpeta más corta (Escritorio o Videos)?\n"
+                "Si continúas, la grabación se guarda primero en una copia local segura "
+                "y al final te pediré una carpeta válida.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            yes = box.button(QMessageBox.Yes)
+            no = box.button(QMessageBox.No)
+            if yes is not None:
+                yes.setText("Elegir carpeta")
+            if no is not None:
+                no.setText("Grabar igual")
+            if box.exec() == QMessageBox.Yes:
+                self._choose_output()
+        return True
+
+    def _offer_pending_save(self) -> None:
+        pending = load_pending()
+        if pending is None:
+            return
+        box = self._dialog(
+            QMessageBox.Warning,
+            "Grabación sin guardar",
+            "Hay una grabación que no llegó a la carpeta de salida.\n"
+            "Los archivos NO se han borrado.\n\n"
+            "¿Elegir ahora una carpeta para guardar el MP4?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        box.button(QMessageBox.Yes).setText("Elegir carpeta")
+        box.button(QMessageBox.No).setText("Más tarde")
+        if box.exec() != QMessageBox.Yes:
+            self._set_status("Grabación pendiente de guardar (no se ha borrado).")
+            return
+        self._pick_folder_and_retry_save()
+
+    def _pick_folder_and_retry_save(self) -> None:
+        start = self._out_edit.text() or self._config.output_dir or str(Path.home())
+        folder = QFileDialog.getExistingDirectory(
+            self, "Elige una carpeta CORTA para guardar", start
+        )
+        if not folder:
+            self._set_status("Grabación pendiente de guardar (no se ha borrado).")
+            return
+        try:
+            resolved = apply_selected_output_dir(self._config, folder)
+            self._out_edit.setText(str(resolved))
+            self._config.save()
+        except Exception:
+            resolved = Path(folder)
+        self._enter_busy("Guardando la grabación pendiente…", "Guardando…")
+        threading.Thread(
+            target=self._recorder.retry_save, args=(resolved,), daemon=True
+        ).start()
+
     def _choose_transcribe_files(self) -> None:
         start = self._out_edit.text() or self._config.output_dir or str(Path.home())
         files, _ok = QFileDialog.getOpenFileNames(
@@ -1204,12 +1405,30 @@ class MainWindow(QMainWindow):
         if files:
             self._import_media_paths(files)
 
+    def _tx_output_base(self) -> str:
+        raw = self._out_edit.text() or self._config.output_dir or str(default_output_dir())
+        return str(resolve_output_dir(raw))
+
+    def _recording_output_base(self, media_path: str) -> str:
+        try:
+            return str(Path(media_path).expanduser().resolve().parent)
+        except OSError:
+            return str(Path(media_path).parent)
+
     def _import_media_paths(self, paths: List[str]) -> None:
         results = enqueue_imports(
             paths,
             store=self._tx_store,
             enqueue=lambda media, language, preset: self._tx_worker.enqueue(
-                media, language, preset=preset
+                media,
+                language,
+                preset=preset,
+                pc_impact=normalize_pc_impact(
+                    self._tx_impact.currentData()
+                    or self._config.transcription_pc_impact
+                ),
+                output_base=self._tx_output_base(),
+                num_speakers=normalize_num_speakers(self._tx_speakers.currentData()),
             ),
             language=normalize_language(
                 self._tx_lang.currentData() or self._config.transcription_language
@@ -1218,6 +1437,7 @@ class MainWindow(QMainWindow):
                 self._tx_preset.currentData() or self._config.transcription_preset
             ),
             tool_available=transcriptor_disponible(self._config.transcriptor_dir),
+            output_base=self._tx_output_base(),
         )
         summary = summarize_import_results(results)
         if summary:
@@ -1228,6 +1448,15 @@ class MainWindow(QMainWindow):
         done = next((r for r in results if r.kind == ALREADY_DONE and r.job), None)
         if done and done.job and not self._tx_store.active():
             self._on_tx_update(done.job)
+        else:
+            first = next((r.job for r in results if r.kind == OK and r.job), None)
+            if first and not (
+                transcription_status_is_open(self._tx_last.get("status"))
+                and self._tx_last.get("status") in ("running", "extracting")
+            ):
+                self._on_tx_update(first)
+            else:
+                self._refresh_tx_queue()
 
     def _build_settings(self) -> RecordingSettings:
         source = self._source_combo.currentData()
@@ -1249,7 +1478,7 @@ class MainWindow(QMainWindow):
         if self._recorder.is_recording():
             # DETENER: el cierre de FFmpeg + mux pueden tardar -> en segundo plano.
             self._rec_dot.setVisible(False)
-            self._enter_busy("Deteniendo y guardando…", "⏳  Procesando…")
+            self._enter_busy("Deteniendo y guardando…", "Guardando…")
             threading.Thread(target=self._recorder.stop, daemon=True).start()
             return
 
@@ -1261,6 +1490,8 @@ class MainWindow(QMainWindow):
             )
             if box.exec() != QMessageBox.Yes:
                 return
+        if not self._ensure_output_folder_for_record():
+            return
         if self._sys_check.isChecked():
             try:
                 from app.capture.windows_audio import describe_system_audio_route
@@ -1292,7 +1523,7 @@ class MainWindow(QMainWindow):
         self._result_banner.setVisible(False)
         self._sys_silent_ticks = 0
         self._sys_silence_warned = False
-        self._enter_busy("Iniciando grabación…", "⏳  Iniciando…")
+        self._enter_busy("Iniciando grabación…", "Iniciando…")
         threading.Thread(target=self._do_start, args=(settings,), daemon=True).start()
 
     def _dialog(self, icon, title: str, text: str, buttons=QMessageBox.Ok):
@@ -1386,8 +1617,13 @@ class MainWindow(QMainWindow):
         self._config.last_mic_name = settings.mic_device.name if settings.mic_device else ""
         self._config.transcribe_after_recording = self._tx_check.isChecked()
         self._config.transcription_preset = normalize_preset(self._tx_preset.currentData())
+        self._config.transcription_pc_impact = normalize_pc_impact(self._tx_impact.currentData())
         self._config.transcription_language = normalize_language(self._tx_lang.currentData())
+        self._config.transcription_num_speakers = normalize_num_speakers(
+            self._tx_speakers.currentData()
+        )
         self._config.auto_mute_follow_meeting = self._auto_mute_check.isChecked()
+        self._config.exclude_window_from_capture = self._hide_self_check.isChecked()
         self._config.save()
 
     # --- callbacks del orquestador (vía señales) ----------------------------
@@ -1409,6 +1645,11 @@ class MainWindow(QMainWindow):
                     path,
                     normalize_language(self._config.transcription_language),
                     preset=normalize_preset(self._config.transcription_preset),
+                    pc_impact=normalize_pc_impact(self._config.transcription_pc_impact),
+                    output_base=self._recording_output_base(path),
+                    num_speakers=normalize_num_speakers(
+                        self._config.transcription_num_speakers
+                    ),
                 ) is not None
             except Exception:
                 pass
@@ -1432,14 +1673,77 @@ class MainWindow(QMainWindow):
         self._record_btn.setEnabled(True)
         self._status_label.setText("Error")
         if self._quit_after_finalize:
+            if self._recorder.has_unsaved_session() or load_pending() is not None:
+                self._quit_after_finalize = False
+                self.show()
+                self._on_save_failed(msg)
+                return
             self._finish_quit()
             return
         self._start_monitor()
         self._flush_pending_mic_hotplug()
         self._dialog(QMessageBox.Critical, "Error al procesar", msg).exec()
 
+    def _on_save_failed(self, msg: str) -> None:
+        """El mux/copia falló: la sesión sigue en disco. Pedir carpeta, no salir."""
+        self._exit_busy()
+        self._set_recording_ui(False)
+        self._record_btn.setEnabled(True)
+        self._status_label.setText("Grabación pendiente de guardar")
+        if self._quit_after_finalize:
+            self._quit_after_finalize = False
+            self.show()
+            self.raise_()
+        self._start_monitor()
+        self._flush_pending_mic_hotplug()
+        box = self._dialog(
+            QMessageBox.Critical,
+            "No se pudo guardar",
+            msg,
+            QMessageBox.Retry | QMessageBox.Cancel,
+        )
+        retry_btn = box.button(QMessageBox.Retry)
+        if retry_btn is not None:
+            retry_btn.setText("Elegir carpeta")
+        cancel_btn = box.button(QMessageBox.Cancel)
+        if cancel_btn is not None:
+            cancel_btn.setText("Más tarde")
+        if box.exec() == QMessageBox.Retry:
+            self._pick_folder_and_retry_save()
+        else:
+            self._set_status("Grabación pendiente de guardar (no se ha borrado).")
+
     # --- transcripción (vía señal del worker) --------------------------------
+    def _tx_live_id(self) -> str:
+        if self._tx_last.get("status") in ("pending", "extracting", "running"):
+            return str(self._tx_last.get("id") or "")
+        return ""
+
+    def _notify_tx_done(self, snap: dict) -> None:
+        nombre = Path(snap.get("media_path", "")).stem
+        if self._tray.isVisible() and not self.isActiveWindow():
+            self._tray.showMessage(
+                "Transcripción lista", nombre, QSystemTrayIcon.Information, 5000
+            )
+
     def _on_tx_update(self, snap: dict) -> None:
+        if snap.get("status") == "done":
+            job_id = str(snap.get("id") or "")
+            rest = any(
+                j.id != job_id and j.status in ("pending", "extracting", "running")
+                for j in self._tx_store.all()
+            )
+            if rest:
+                # El lote sigue: el aviso se queda en el archivo en curso, pero
+                # cada archivo terminado sí se notifica.
+                self._notify_tx_done(snap)
+                self._refresh_tx_queue()
+                return
+        self._tx_last = snap
+        self._apply_tx_snapshot(snap)
+        self._refresh_tx_queue()
+
+    def _apply_tx_snapshot(self, snap: dict) -> None:
         self._tx_last = snap
         nombre = Path(snap.get("media_path", "")).stem
         estado = snap.get("status", "")
@@ -1457,26 +1761,106 @@ class MainWindow(QMainWindow):
         self._tx_clear_btn.setVisible(hay_fallidos or es_error or es_cancelado)
         self._tx_log_btn.setVisible(es_error or es_cancelado)
         self._tx_bar.setVisible(es_activo)
-        self._tx_banner.setVisible(True)
+        if es_done or es_error or es_cancelado or es_activo:
+            self._tx_banner.setVisible(True)
 
         if es_done:
             nota = f"  ({snap['note']})" if snap.get("note") else ""
             self._tx_label.setText(f"✓ Transcripción lista{nota}:  {nombre}")
-            if self._tray.isVisible() and not self.isActiveWindow():
-                self._tray.showMessage("Transcripción lista", nombre,
-                                       QSystemTrayIcon.Information, 5000)
+            self._notify_tx_done(snap)
         elif es_cancelado:
             self._tx_label.setText(f"⛔ Transcripción cancelada:  {nombre}")
         elif es_error:
             detalle = (snap.get("error") or "")[:140]
             self._tx_label.setText(f"⚠ Transcripción falló:  {nombre}\n{detalle}")
-        else:
-            self._tx_label.setText(f"🎙 {stage}  ·  {nombre}")
+        elif es_activo:
+            # La pausa ya trae su propio ⏸: no duplicar iconos.
+            icono = "" if stage.startswith("⏸") else "🎙 "
+            self._tx_label.setText(
+                f"{icono}{stage}  ·  {nombre}{batch_suffix(snap)}{eta_suffix(snap)}"
+            )
             if pct is not None and pct > 0:
                 self._tx_bar.setRange(0, 100)
                 self._tx_bar.setValue(pct)
             else:
-                self._tx_bar.setRange(0, 0)  # indeterminado (cola/diarización)
+                self._tx_bar.setRange(0, 0)
+        else:
+            self._tx_label.setText("")
+
+    def _refresh_tx_queue(self) -> None:
+        live_id = self._tx_live_id()
+        c = self._tx_store.queue_counts(live_id)
+        parts = []
+        if c["running"]:
+            parts.append(f"{c['running']} en curso")
+        if c["pending"]:
+            parts.append(f"{c['pending']} en espera")
+        if c["failed"]:
+            parts.append(f"{c['failed']} fallida(s)")
+        lote = batch_eta_text(self._tx_last)
+        if lote:
+            parts.append(lote)
+        hint = ("Resumen: " + " · ".join(parts)) if parts else ""
+        self._tx_queue_hint.setText(hint)
+        self._tx_queue_hint.setVisible(bool(hint))
+        if c["running"]:
+            self._tx_import_status.setVisible(False)
+
+        jobs = visible_queue_jobs(self._tx_store.all())
+        current_id = str(self._tx_last.get("id") or "")
+        stage = str(self._tx_last.get("stage") or "")
+        pct = self._tx_last.get("progress")
+        progress = pct if isinstance(pct, int) else None
+
+        self._tx_queue_list.blockSignals(True)
+        selected = live_id or current_id
+        prev = self._tx_queue_list.currentItem()
+        if prev is not None:
+            prev_id = str(prev.data(Qt.UserRole) or "")
+            prev_job = (
+                self._tx_store._load(self._tx_store._path(prev_id)) if prev_id else None
+            )
+            if prev_job is not None and prev_job.status in ("error", "cancelled"):
+                selected = prev_id
+        self._tx_queue_list.clear()
+        for job in jobs:
+            line = format_queue_line(
+                job,
+                stage=stage if job.id == current_id else "",
+                progress=progress if job.id == current_id else None,
+                live_id=live_id or current_id,
+            )
+            item = QListWidgetItem(line)
+            item.setData(Qt.UserRole, job.id)
+            self._tx_queue_list.addItem(item)
+            if job.id == selected:
+                item.setSelected(True)
+                self._tx_queue_list.setCurrentItem(item)
+        self._tx_queue_list.blockSignals(False)
+        empty = not jobs
+        self._tx_queue_empty.setVisible(False)
+        self._tx_queue_list.setVisible(not empty)
+        if jobs:
+            self._tx_banner.setVisible(True)
+
+    def _on_tx_queue_selected(self) -> None:
+        item = self._tx_queue_list.currentItem()
+        if item is None:
+            return
+        job_id = item.data(Qt.UserRole)
+        job = self._tx_store._load(self._tx_store._path(str(job_id)))
+        if job is None:
+            return
+        live = self._tx_live_id()
+        if live and job.id != live and job.status in ("pending", "extracting", "running"):
+            return
+        snap = job.snapshot()
+        if job.id == self._tx_last.get("id"):
+            if self._tx_last.get("stage"):
+                snap["stage"] = self._tx_last["stage"]
+            if self._tx_last.get("progress") is not None:
+                snap["progress"] = self._tx_last["progress"]
+        self._apply_tx_snapshot(snap)
 
     def _open_transcription(self) -> None:
         carpeta = self._tx_last.get("result_dir")
@@ -1498,11 +1882,13 @@ class MainWindow(QMainWindow):
         job_id = self._tx_last.get("id")
         if job_id:
             self._tx_worker.retry(job_id)
+            self._refresh_tx_queue()
 
     def _cancel_transcription(self) -> None:
         job_id = self._tx_last.get("id")
         if job_id:
             self._tx_worker.cancel(job_id)
+            self._refresh_tx_queue()
 
     def _clear_failed_transcriptions(self) -> None:
         n = self._tx_worker.clear_failed()
@@ -1510,8 +1896,8 @@ class MainWindow(QMainWindow):
             self._tx_banner.setVisible(False)
             self._tx_last = {}
         elif self._tx_last:
-            # Refrescar visibilidad del botón Limpiar
             self._on_tx_update(self._tx_last)
+        self._refresh_tx_queue()
 
     # --- estado de la UI -----------------------------------------------------
     def _set_recording_ui(self, recording: bool) -> None:
@@ -1586,7 +1972,14 @@ class MainWindow(QMainWindow):
             if not self._recorder.is_paused() and self._preview_counter % 10 == 0:
                 self._update_preview()
         elif self._preview_counter % 15 == 0:
-            self._update_preview()
+            # No abrir WGC en bucle: el driver Intel crashea pythonw (c0000005
+            # en igd10um64xe.DLL) si se crea/destruye captura cada ~1.5 s.
+            if not should_pause_idle_wgc_preview(
+                recording=False,
+                transcription_open=self._transcription_open(),
+                periodic=True,
+            ):
+                self._update_preview()
 
         # Detección de uso del micrófono por otras apps (~cada 1.5 s).
         if self._preview_counter % 15 == 0:
@@ -1602,11 +1995,12 @@ class MainWindow(QMainWindow):
         names = sorted({u.name for u in users})
         in_meeting = bool(names)
         if in_meeting:
-            self._mic_usage_label.setText(
-                "🔴 En llamada — " + ", ".join(names) + " está usando el micrófono"
-            )
+            msg = "En llamada — " + ", ".join(names) + " está usando el micrófono"
+            self._mic_usage_label.setText(msg)
+            self._mic_usage_label.setToolTip(msg)
         else:
-            self._mic_usage_label.setText("🟢 Sin llamada activa")
+            self._mic_usage_label.setText("Sin llamada activa")
+            self._mic_usage_label.setToolTip("")
 
         if self._auto_mute_check.isChecked():
             try:
@@ -1695,13 +2089,26 @@ class MainWindow(QMainWindow):
             if box.exec() != QMessageBox.Yes:
                 event.ignore()
                 return
-            # Detener y salir cuando termine de procesarse (en _on_finished/_on_error).
+            # Detener y salir SOLO si el guardado termina bien (_on_finished).
+            # Si falla, _on_save_failed cancela este flag y pide carpeta.
             self._quit_after_finalize = True
-            self._enter_busy("Guardando antes de salir…", "⏳  Guardando…")
+            self._enter_busy("Guardando antes de salir…", "Guardando…")
             threading.Thread(target=self._recorder.stop, daemon=True).start()
             event.ignore()  # seguimos vivos hasta que el mux termine
             self.hide()
             return
+        if self._recorder.has_unsaved_session() or load_pending() is not None:
+            box = self._dialog(
+                QMessageBox.Warning,
+                "Grabación sin guardar",
+                "Hay una grabación que aún no está en la carpeta de salida.\n"
+                "Si sales ahora, los archivos NO se borran; al volver a abrir podrás guardarlos.\n\n"
+                "¿Salir sin copiar el MP4 a tu carpeta?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if box.exec() != QMessageBox.Yes:
+                event.ignore()
+                return
         # Si hay una transcripción en marcha, avisar que continúa sola: el
         # subproceso es independiente (su salida va a un archivo, no a un pipe)
         # y al reabrir la app la reconciliación lo retoma o recoge el resultado.
