@@ -10,7 +10,9 @@ Soporta:
 Flujo:
 1. `start(settings)` arranca el primer tramo.
 2. `pause()` cierra los segmentos actuales; `resume()` abre tramos nuevos.
-3. `stop()` cierra todo y, en un HILO de fondo, concatena + multiplexa el MP4.
+3. `stop()` cierra todo y, en un HILO de fondo, concatena + multiplexa el MP4
+   a una ruta local corta; solo entonces copia al destino del usuario. Si el
+   guardado falla, la sesión NO se borra (`on_save_failed`).
 
 Resultados por callbacks: `on_status`, `on_finished`, `on_error`.
 """
@@ -19,14 +21,26 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import tempfile
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from app.capture.base import VideoCapture
 from app.core.clock import MasterClock
 from app.core.config import AudioDevice, RecordingSettings, VideoSource, recording_stem
+from app.core.output_path import (
+    PendingSave,
+    clear_pending,
+    copy_mp4_verified,
+    dest_file_path,
+    ffmpeg_path_too_long,
+    new_session_dir,
+    session_has_media,
+    staging_mp4_path,
+    write_pending,
+    load_pending,
+)
 from app.encode.ffmpeg import (
     Segment,
     Track,
@@ -64,11 +78,14 @@ class Recorder:
         on_finished: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[int], None]] = None,
+        on_save_failed: Optional[Callable[[str], None]] = None,
     ):
         self._on_status = on_status or (lambda _msg: None)
         self._on_finished = on_finished or (lambda _path: None)
         self._on_error = on_error or (lambda _msg: None)
         self._on_progress = on_progress or (lambda _pct: None)
+        # Fallo al guardar: la sesión SIGUE en disco. Distinto de on_error de arranque.
+        self._on_save_failed = on_save_failed or on_error or (lambda _msg: None)
 
         self._clock = MasterClock()
         self._video: Optional[VideoCapture] = None
@@ -85,6 +102,12 @@ class Recorder:
         self._recording = False
         self._paused = False
         self._mic_muted = False
+
+        self._staging_mp4: Optional[str] = None
+        self._stem: Optional[str] = None
+        self._video_final: Optional[str] = None
+        self._tracks: List[Track] = []
+        self._total_seconds: float = 0.0
 
     # --- estado / métricas para la UI ---------------------------------------
     def is_recording(self) -> bool:
@@ -121,9 +144,19 @@ class Recorder:
 
         from app.capture.windows_audio import MicCapture
 
-        settings.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            settings.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # La carpeta de destino puede ser inutilizable (ruta larga, sin permiso).
+            # Igual grabamos a LOCALAPPDATA; al detener se pedirá una carpeta válida.
+            pass
         self._settings = settings
-        self._temp_dir = tempfile.mkdtemp(prefix="recsess_")
+        self._temp_dir = new_session_dir()
+        self._staging_mp4 = None
+        self._stem = None
+        self._video_final = None
+        self._tracks = []
+        self._total_seconds = 0.0
         self._video_segments = []
         self._system_segments = []
         self._cycle = 0
@@ -141,7 +174,8 @@ class Recorder:
             self._stop_current_captures()
             if self._mic is not None:
                 self._mic.stop()
-            self._cleanup_temp()
+            if not session_has_media(self._temp_dir or ""):
+                self._cleanup_temp()
             raise RuntimeError(f"No se pudo iniciar la grabación: {exc}") from exc
 
         self._recording = True
@@ -238,6 +272,139 @@ class Recorder:
         self._video = None
         self._system_audio = None
 
+    def has_unsaved_session(self) -> bool:
+        if self._staging_mp4 and os.path.isfile(self._staging_mp4) and os.path.getsize(self._staging_mp4) > 0:
+            return True
+        return bool(self._temp_dir) and session_has_media(self._temp_dir)
+
+    def _remember_pending(self, intended: str) -> None:
+        write_pending(
+            PendingSave(
+                temp_dir=self._temp_dir or "",
+                staging_mp4=self._staging_mp4 or "",
+                intended_dest=intended,
+                stem=self._stem or "",
+            )
+        )
+
+    def _mux_to_staging(self) -> str:
+        assert self._video_final is not None
+        assert self._stem is not None
+        staging = staging_mp4_path(self._stem)
+        if ffmpeg_path_too_long(staging):
+            raise RuntimeError(
+                f"La ruta local de trabajo también es demasiado larga:\n{staging}"
+            )
+        self._on_status("Guardando…")
+        mux_recording(
+            video_path=self._video_final,
+            tracks=self._tracks,
+            output_path=str(staging),
+            sample_rate=self._settings.sample_rate if self._settings else 48_000,
+            total_seconds=self._total_seconds,
+            progress_cb=self._on_progress,
+        )
+        if not os.path.isfile(staging) or os.path.getsize(staging) <= 0:
+            raise RuntimeError("FFmpeg no dejó un MP4 de trabajo usable.")
+        self._staging_mp4 = str(staging)
+        return self._staging_mp4
+
+    def _deliver_to(self, output_dir: Path) -> str:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_file_path(output_dir, self._stem or "Grabacion")
+        if not (self._staging_mp4 and os.path.isfile(self._staging_mp4) and os.path.getsize(self._staging_mp4) > 0):
+            staging = self._mux_to_staging()
+        else:
+            staging = self._staging_mp4
+        copy_mp4_verified(Path(staging), dest)
+        return str(dest)
+
+    def adopt_pending(self, pending: PendingSave) -> None:
+        """Retoma una sesión persistida (p. ej. tras reiniciar la app)."""
+        self._temp_dir = pending.temp_dir or None
+        self._staging_mp4 = pending.staging_mp4 or None
+        if self._staging_mp4 and not os.path.isfile(self._staging_mp4):
+            self._staging_mp4 = None
+        self._stem = pending.stem or "Grabacion"
+        if self._temp_dir and os.path.isdir(self._temp_dir):
+            segs = sorted(Path(self._temp_dir).glob("video_seg*.mkv"))
+            self._video_segments = [str(p) for p in segs]
+
+    def retry_save(self, output_dir: Path) -> None:
+        """Reintenta copiar (o mux + copiar) a una carpeta que eligió el usuario."""
+        try:
+            if not self._stem or not (self._staging_mp4 or self._temp_dir):
+                pending = load_pending()
+                if pending is not None:
+                    self.adopt_pending(pending)
+            if self._settings is not None:
+                self._settings.output_dir = Path(output_dir)
+            elif self._settings is None:
+                from app.core.config import VideoSource as _VS
+
+                self._settings = RecordingSettings(
+                    video_source=_VS(kind="screen", monitor_index=1, is_primary=True),
+                    mic_device=None,
+                    output_dir=Path(output_dir),
+                )
+            if not (self._staging_mp4 and os.path.isfile(self._staging_mp4)):
+                if not self._video_final or not os.path.isfile(self._video_final):
+                    if not self._video_segments:
+                        raise RuntimeError("No hay segmentos de video para reconstruir el MP4.")
+                    video_final = os.path.join(self._temp_dir or "", "video_final.mkv")
+                    self._video_final = concat_videos(self._video_segments, video_final)
+                    video_durs = [probe_duration(p) for p in self._video_segments]
+                    cycle_start = []
+                    acc = 0.0
+                    for d in video_durs:
+                        cycle_start.append(acc)
+                        acc += d
+                    tracks: List[Track] = []
+                    tracks += self._build_system_track(video_durs, cycle_start)
+                    tracks += self._build_mic_track(video_durs, cycle_start)
+                    if not tracks and self._temp_dir:
+                        from app.encode.ffmpeg import Segment, Track as _Trk
+
+                        sys_files = sorted(Path(self._temp_dir).glob("system_seg*.wav"))
+                        mic_files = sorted(Path(self._temp_dir).glob("mic_seg_*.wav"))
+                        if sys_files:
+                            tracks.append(
+                                _Trk("Sistema", [Segment(str(p), 0.0) for p in sys_files])
+                            )
+                        if mic_files:
+                            tracks.append(
+                                _Trk("Microfono", [Segment(str(p), 0.0) for p in mic_files])
+                            )
+                    self._tracks = tracks
+                    self._total_seconds = sum(video_durs)
+            intended = str(dest_file_path(Path(output_dir), self._stem or "Grabacion"))
+            self._remember_pending(intended)
+            dest = self._deliver_to(Path(output_dir))
+            self._finish_success(dest)
+        except Exception as exc:
+            self._remember_pending(str(Path(output_dir) / f"{self._stem or 'Grabacion'}.mp4"))
+            self._on_save_failed(
+                "No se pudo guardar en esa carpeta.\n\n"
+                f"{exc}\n\n"
+                "Los archivos de la grabación NO se han borrado. Elige otra carpeta."
+            )
+
+    def _finish_success(self, dest: str) -> None:
+        clear_pending()
+        self._on_status("Listo")
+        self._on_finished(dest)
+        self._cleanup_temp()
+        self._cleanup_staging()
+
+    def _cleanup_staging(self) -> None:
+        if self._staging_mp4 and os.path.isfile(self._staging_mp4):
+            try:
+                os.remove(self._staging_mp4)
+            except OSError:
+                pass
+        self._staging_mp4 = None
+
     def _finalize(self) -> None:
         assert self._settings is not None and self._temp_dir is not None
         try:
@@ -251,7 +418,7 @@ class Recorder:
 
             # 2) Unir los tramos de video (si hubo pausas).
             video_final = os.path.join(self._temp_dir, "video_final.mkv")
-            video_final = concat_videos(self._video_segments, video_final)
+            self._video_final = concat_videos(self._video_segments, video_final)
 
             # 3) Pistas de audio, alineadas POR EL FINAL de cada tramo: como todos
             #    los flujos se detienen a la vez, el audio (que arranca un poco más
@@ -260,32 +427,35 @@ class Recorder:
             tracks: List[Track] = []
             tracks += self._build_system_track(video_durs, cycle_start)
             tracks += self._build_mic_track(video_durs, cycle_start)
-            total_seconds = sum(video_durs)
+            self._tracks = tracks
+            self._total_seconds = sum(video_durs)
 
             # Cancelación de eco INTEGRADA: se limpia el micrófono ANTES del mux,
             # así el video se procesa una sola vez (no se re-multiplexa después).
             if self._settings.reduce_echo:
-                tracks = self._apply_aec_to_tracks(tracks)
+                self._tracks = self._apply_aec_to_tracks(self._tracks)
 
-            stem = recording_stem(self._settings.video_source)
-            out_path = str(self._settings.output_dir / f"{stem}.mp4")
+            self._stem = recording_stem(self._settings.video_source)
+            intended = str(dest_file_path(self._settings.output_dir, self._stem))
+            self._remember_pending(intended)
 
-            self._on_status("Guardando…")
-            mux_recording(
-                video_path=video_final,
-                tracks=tracks,
-                output_path=out_path,
-                sample_rate=self._settings.sample_rate,
-                total_seconds=total_seconds,
-                progress_cb=self._on_progress,
-            )
-
-            self._on_status("Listo")
-            self._on_finished(out_path)
+            self._mux_to_staging()
+            dest = self._deliver_to(self._settings.output_dir)
+            self._finish_success(dest)
         except Exception as exc:
-            self._on_error(str(exc))
-        finally:
-            self._cleanup_temp()
+            intended = ""
+            if self._settings is not None and self._stem:
+                intended = str(dest_file_path(self._settings.output_dir, self._stem))
+            self._remember_pending(intended)
+            if self.has_unsaved_session():
+                self._on_save_failed(
+                    "No se pudo guardar el archivo de la grabación.\n\n"
+                    f"{exc}\n\n"
+                    "Los archivos NO se han borrado. Elige una carpeta de salida "
+                    "(mejor una ruta corta: Escritorio o Videos)."
+                )
+            else:
+                self._on_error(str(exc))
 
     def _apply_aec_to_tracks(self, tracks: List[Track]) -> List[Track]:
         """Reemplaza la pista de micrófono por una sin eco (usando el sistema como
