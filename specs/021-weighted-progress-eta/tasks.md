@@ -85,7 +85,11 @@
 ## Phase 6: Polish
 
 - [x] T024 Full suite green (`python -m unittest discover -s tests -q`)
-- [ ] T025 Manual acceptance per `quickstart.md` §3 on the next real run — pending user run
+- [x] T025 Manual acceptance per `quickstart.md` §3 — **run 2026-09-18** on real batches (three samples of 45 s, then two of 300 s; speakers on, "Usar más CPU"):
+  - **the frozen percentage is gone**: during speaker identification the bar ran 40 → 81 % and 40 → 85 % on the 300 s samples (and 32 → 45, 34 → 46, 30 → 37 on the 45 s ones), refreshing every 15 s with no log line to go by
+  - the finish time was always present and never sat in the past (52 notices with a time, 0 expired at emission)
+  - the whole 300 s batch took 648 s for 600 s of audio — **1.08×**, matching the factor documented in `CLAUDE.md`
+  - **accuracy was the one criterion that failed**: 370 s promised against 313 s and 330 s real (+18 % and +12 %). Root cause measured and fixed in spec 025 — the model load was charged to every file instead of once per engine run, and the constant was over three times the measured cost
 
 ---
 

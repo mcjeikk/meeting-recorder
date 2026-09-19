@@ -24,8 +24,12 @@ from app.transcription.pc_impact import DEFAULT_PC_IMPACT, normalize_pc_impact
 _WAV_BYTES_PER_SECOND = 16000 * 2
 _WAV_HEADER = 44
 
-# Carga de modelos antes del primer segundo de audio (un lote la paga una vez).
-STARTUP_SECONDS = 40.0
+# Carga de modelos antes del primer segundo de audio. La paga el PRIMER archivo
+# de cada ejecución del CLI; los demás del mismo argv reutilizan los modelos y no
+# deben cargarla (spec 025). Medido 2026-09-18 con 45 s de audio y la misma
+# configuración: 55 s y 54 s cargando contra 42 s reutilizando → 12-13 s. El 40
+# que había antes prometía 40 s de más en CADA archivo del lote.
+STARTUP_SECONDS = 12.0
 
 # Mínimo de muestras para creerle al historial de la máquina antes del default.
 MIN_SAMPLES = 3
@@ -176,11 +180,18 @@ class SpeedStore:
         return default_factor(key)
 
 
-def estimate_total_seconds(audio_seconds: float, factor: float) -> float:
-    """Segundos de trabajo para ese audio (0 si no se conoce la duración)."""
+def estimate_total_seconds(
+    audio_seconds: float, factor: float, *, load_models: bool = True
+) -> float:
+    """Segundos de trabajo para ese audio (0 si no se conoce la duración).
+
+    `load_models=False` para un archivo que entra en un CLI ya arrancado: los
+    modelos están cargados y ese tiempo no lo va a esperar nadie.
+    """
     if audio_seconds <= 0 or factor <= 0:
         return 0.0
-    return audio_seconds * factor + STARTUP_SECONDS
+    arranque = STARTUP_SECONDS if load_models else 0.0
+    return audio_seconds * factor + arranque
 
 
 def weighted_progress(
@@ -240,7 +251,7 @@ class ProgressTracker:
         self._store = store
         self.reset(None)
 
-    def reset(self, job: object) -> None:
+    def reset(self, job: object, *, load_models: bool = True) -> None:
         self.job_id = str(getattr(job, "id", "") or "")
         self.audio_seconds = (
             wav_duration_seconds(getattr(job, "work_wav", "")) if job is not None else 0.0
@@ -248,7 +259,9 @@ class ProgressTracker:
         self.factor = (
             self._store.factor_for(key_for_job(job)) if job is not None else FALLBACK_FACTOR
         )
-        self.total = estimate_total_seconds(self.audio_seconds, self.factor)
+        self.total = estimate_total_seconds(
+            self.audio_seconds, self.factor, load_models=load_models
+        )
         self.active = 0.0
         self.progress: Optional[int] = None
         self._last_tick: Optional[float] = None

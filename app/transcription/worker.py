@@ -526,8 +526,13 @@ class TranscriptionWorker:
             audio = wav_duration_seconds(fresco.work_wav)
             if not audio:
                 return 0.0  # falta un dato: mejor no dar un total a medias
+            # Los pendientes de este argv entran en un CLI con los modelos ya
+            # cargados: solo suman trabajo (spec 025). Cobrar el arranque a cada
+            # uno inventaba minutos de espera en lotes largos.
             restante += estimate_total_seconds(
-                audio, self._speed.factor_for(key_for_job(fresco))
+                audio,
+                self._speed.factor_for(key_for_job(fresco)),
+                load_models=False,
             )
         return now + restante
 
@@ -551,7 +556,9 @@ class TranscriptionWorker:
         applied_impact = normalize_pc_impact(getattr(job, "pc_impact", DEFAULT_PC_IMPACT))
         group = list(cohort) if cohort else self._cohort(job)
         tracker = ProgressTracker(self._speed)
-        tracker.reset(job)
+        # Solo el primer archivo de un CLI que acabamos de lanzar espera la carga
+        # de modelos; uno re-adoptado entra en un proceso que ya la pagó.
+        tracker.reset(job, load_models=owned is not None)
         ultimo_emit = 0.0
         try:
             while True:
@@ -595,7 +602,7 @@ class TranscriptionWorker:
                         promoted = self._activate_live(matched, previous=job)
                         if promoted is not None:
                             job = promoted
-                            tracker.reset(job)
+                            tracker.reset(job, load_models=False)
                 if nueva_fase:
                     fase = nueva_fase
                 if nuevo_stage:
@@ -619,7 +626,7 @@ class TranscriptionWorker:
                         # Archivo nuevo del lote: vuelve a transcripción desde 0.
                         job, fase, pct = promoted, PHASE_ASR, 0
                         stage = label_for_phase(fase)
-                        tracker.reset(job)
+                        tracker.reset(job, load_models=False)
                     else:
                         job = live
                         self._current = job

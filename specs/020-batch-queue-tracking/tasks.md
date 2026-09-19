@@ -107,7 +107,11 @@
 
 - [x] T028 [P] Record the new invariants in `CLAUDE.md`: one live job per batch, log read by sections, `purge_orphan_work_dirs` at reconcile
 - [x] T029 Full suite green (`python -m unittest discover -s tests -q`): 131 tests
-- [ ] T030 Manual acceptance on the next real multi-file batch per `quickstart.md` §3 (needs a restart of the app to pick up the worker changes) — pending user run
+- [x] T030 Manual acceptance on a real multi-file batch per `quickstart.md` §3 — **run 2026-09-18** over throwaway samples of real recordings (three of 45 s, then two of 300 s), driving the real worker and the real engine, with the notice and the queue rows rendered by the window's own functions. Everything held:
+  - only one file "En curso" at a time (maximum observed: 1); the rest showed "En espera" and the summary never claimed more than one running
+  - the notice never named a finished file again (0 late notices), and each file was marked ready at its own time (56 s / 112 s / 154 s, and 315 s / 648 s) instead of all at the end
+  - the batch position followed the real cohort: "archivo 1 de 2" and "archivo 2 de 2" for the two files that shared one engine run
+  - speakers were really detected (1, 2, 1 and 3, 2), so the runs exercised diarization rather than a degraded path
 
 ---
 

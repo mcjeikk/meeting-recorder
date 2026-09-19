@@ -161,6 +161,38 @@ class TestWeightedProgress(unittest.TestCase):
         self.assertEqual(estimate_total_seconds(0, 1.10), 0.0)
 
 
+class TestModelLoadChargedOnce(unittest.TestCase):
+    """El CLI carga los modelos una vez por ejecución, no por archivo (spec 025)."""
+
+    def test_the_first_file_of_a_run_pays_the_load(self) -> None:
+        self.assertAlmostEqual(
+            estimate_total_seconds(300, 1.10, load_models=True),
+            300 * 1.10 + STARTUP_SECONDS,
+            places=3,
+        )
+
+    def test_a_file_that_reuses_the_models_only_pays_its_audio(self) -> None:
+        reutiliza = estimate_total_seconds(300, 1.10, load_models=False)
+        self.assertAlmostEqual(reutiliza, 300 * 1.10, places=3)
+        self.assertAlmostEqual(
+            estimate_total_seconds(300, 1.10) - reutiliza, STARTUP_SECONDS, places=3
+        )
+
+    def test_the_charge_is_the_measured_one(self) -> None:
+        # Medido 2026-09-18 con 45 s de audio: 55-42 = 13 s y 54-42 = 12 s entre
+        # cargar los modelos y reutilizarlos. 40 s (el valor viejo) prometía de más.
+        self.assertGreater(STARTUP_SECONDS, 0.0)
+        self.assertLessEqual(STARTUP_SECONDS, 20.0)
+
+    def test_without_duration_there_is_no_estimate_either_way(self) -> None:
+        self.assertEqual(estimate_total_seconds(0, 1.10, load_models=True), 0.0)
+        self.assertEqual(estimate_total_seconds(0, 1.10, load_models=False), 0.0)
+
+    def test_a_short_sample_is_not_promised_double_its_work(self) -> None:
+        # SC-004: 45 s reutilizando modelos tardaron 42 s reales; antes prometía 90 s.
+        self.assertLess(estimate_total_seconds(45, 1.10, load_models=False), 2 * 42)
+
+
 class TestProgressTracker(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -194,6 +226,16 @@ class TestProgressTracker(unittest.TestCase):
         rapido = ProgressTracker(self.store)
         rapido.reset(self._job(3600, no_diarize=True))
         self.assertLess(rapido.total, conmigo.total)
+
+    def test_reset_forwards_who_pays_the_model_load(self) -> None:
+        primero = ProgressTracker(self.store)
+        primero.reset(self._job(600))
+        siguiente = ProgressTracker(self.store)
+        siguiente.reset(self._job(600), load_models=False)
+        self.assertAlmostEqual(
+            primero.total - siguiente.total, STARTUP_SECONDS, places=3
+        )
+        self.assertAlmostEqual(siguiente.total, 600 * siguiente.factor, places=3)
 
     def test_unknown_duration_gives_no_eta(self) -> None:
         tracker = ProgressTracker(self.store)

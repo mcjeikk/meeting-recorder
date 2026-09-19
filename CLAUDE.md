@@ -109,6 +109,14 @@ El README cubre el uso; este archivo documenta lo que NO es obvio desde el códi
   (duración de audio, tiempo activo) por `modelo|hablantes|uso del PC`; con ≥3
   muestras manda la mediana propia, antes el default medido. El tiempo se cuenta
   ACTIVO (suspender por grabación no consume la estimación).
+- **La carga de modelos se cobra UNA VEZ por ejecución del CLI**, no por archivo
+  (`STARTUP_SECONDS`, 12 s; spec 025): solo el primer archivo del argv la espera,
+  y un job re-adoptado entra en un proceso que ya la pagó. Medida el 18-sep-2026
+  con 45 s de audio y la misma configuración: 55 s y 54 s cargando contra 42 s
+  reutilizando → 12–13 s. Con el viejo 40 s por archivo, el "lote listo ~HH:MM"
+  de 10 archivos inventaba 6 minutos y cada archivo prometía 40 s de más (medido:
+  370 s prometidos contra 313 s y 330 s reales en muestras de 5 min). Si algún día
+  se mide en frío o en un disco lento, este es el número a repetir — no a adivinar.
 - gdigrab pantalla 3440×1440: ~18 fps máx (por eso WGC). WGC: 30 fps de contenedor
   con ~27 fps reales de contenido.
 - GPU: detección automática por ejecución (`device: auto` en config.yaml del

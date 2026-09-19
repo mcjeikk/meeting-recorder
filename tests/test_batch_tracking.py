@@ -18,6 +18,7 @@ from app.transcription.cli_progress import (
     log_section_for,
     section_ended_in_diarization,
 )
+from app.transcription.eta import ProgressTracker
 from app.transcription.jobs import (
     CANCELLED,
     DONE,
@@ -163,6 +164,58 @@ class TestBatchTracking(unittest.TestCase):
         posteriores = [s for s in self.emitted[listo + 1 :] if s["status"] == RUNNING]
         self.assertTrue(posteriores, "tras terminar 'uno' debe seguir avisando del siguiente")
         self.assertNotIn("uno", [Path(s["media_path"]).stem for s in posteriores])
+
+    def test_batch_estimate_carries_one_model_load_not_one_per_file(self) -> None:
+        # El CLI carga los modelos una vez por ejecución: los pendientes del
+        # mismo argv solo añaden trabajo (spec 025 SC-001).
+        a = self._job("uno", RUNNING, audio_seconds=600)
+        pendientes = [
+            self._job(f"p{i}", PENDING, audio_seconds=600) for i in range(1, 4)
+        ]
+        tracker = ProgressTracker(self.worker._speed)
+        tracker.reset(a)
+        factor = tracker.factor
+        ahora = 1_000_000.0
+
+        def lote(grupo):
+            return self.worker._batch_eta(grupo, a, tracker, now=ahora)
+
+        con_uno = lote([a, pendientes[0]])
+        con_tres = lote([a] + pendientes)
+        # Cada pendiente añade su trabajo, sin un arranque propio.
+        self.assertAlmostEqual(con_uno - ahora, tracker.remaining() + 600 * factor, places=2)
+        self.assertAlmostEqual(con_tres - con_uno, 2 * 600 * factor, places=2)
+        # Y el lote entero no lleva más de un arranque que el archivo en curso.
+        self.assertLess(
+            con_tres - ahora - tracker.remaining() - 3 * 600 * factor,
+            1.0,
+        )
+
+    def test_a_file_promoted_inside_a_running_engine_pays_no_model_load(self) -> None:
+        # El segundo archivo del argv no espera la carga de modelos: su estimación
+        # no debe incluirla (spec 025 SC-002).
+        a = self._job("uno", RUNNING, audio_seconds=600)
+        b = self._job("dos", PENDING, audio_seconds=600)
+        driver = _LogDriver(
+            self.log,
+            [
+                self._append("> Procesando: uno.wav\n    transcribiendo... 50%\n"),
+                self._finish("uno"),
+                self._append("  OK en 90s  ->  x\n> Procesando: dos.wav\n"),
+                self._append("    transcribiendo... 10%\n"),
+            ],
+        )
+        arranque = time.time()
+        self.worker._monitor(a, _FakeProc(), owned=driver, cohort=[a, b])
+        de_dos = [
+            s for s in self.emitted
+            if s["id"] == b.id and s["status"] == RUNNING and s["eta_epoch"]
+        ]
+        self.assertTrue(de_dos)
+        referencia = ProgressTracker(self.worker._speed)
+        referencia.reset(b, load_models=False)
+        # El restante prometido no excede el trabajo puro (más el poco tiempo del test).
+        self.assertLess(de_dos[0]["eta_epoch"] - arranque, referencia.total + 5.0)
 
     def test_unknown_duration_keeps_progress_indeterminate(self) -> None:
         # Sin WAV de trabajo medible no se puede estimar: en diarización el
