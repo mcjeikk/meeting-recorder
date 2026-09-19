@@ -65,6 +65,7 @@ As the user importing files I want a momentarily locked record to be read as wha
 
 - **FR-001**: Saving a queue record MUST survive a momentary failure to replace it by retrying for a short, bounded time.
 - **FR-002**: Two concurrent saves of the same job MUST NOT interfere; each MUST use its own temporary file.
+- **FR-002a**: The app MUST NOT let its own threads contend for a record: reads and writes within the app MUST be serialised, because on Windows an open reader prevents the replace and retrying only makes the collision less likely, never impossible. Retries are for interference from outside the app.
 - **FR-003**: A save that cannot succeed MUST report the failure to its caller.
 - **FR-004**: No temporary file may remain in the queue after any save, successful or not.
 - **FR-005**: Reading a record MUST survive a momentary failure by retrying for the same bounded time.
@@ -84,7 +85,7 @@ As the user importing files I want a momentarily locked record to be read as wha
 ### Measurable Outcomes
 
 - **SC-001**: With the replace failing twice in a row, the record is saved and the job's state is exactly what was saved.
-- **SC-002**: Six threads saving the same job a hundred times between them produce no errors, a valid record, and no leftover temporary files.
+- **SC-002**: Eight threads saving the same job three hundred times between them, while also reading the whole queue, produce no errors, a valid record and no leftover temporary files — repeatedly, not once.
 - **SC-003**: With the read denied twice in a row, the record is returned rather than reported absent.
 - **SC-004**: Reading a record that does not exist returns immediately, with no retry delay.
 - **SC-005**: A permanent write failure raises, and leaves no temporary file.
@@ -93,5 +94,6 @@ As the user importing files I want a momentarily locked record to be read as wha
 ## Assumptions
 
 - These locks last milliseconds (another thread's replace, an antivirus scan), so a budget of a few tenths of a second covers them without a perceptible delay anywhere.
+- Serialising the app's own reads and writes of records costs nothing measurable: each is a sub-millisecond operation on a small file, and the queue is already re-read in full for almost every question (bounded by pruning, spec 023).
 - Retrying is the right answer for a lock and the wrong answer for absence; the two cases must stay distinguishable, which is why they are handled separately rather than by catching everything.
 - The learned speed history has the same fixed-temporary pattern, but a failure there is already swallowed by design (the history is a convenience, not a record), so it is out of scope.

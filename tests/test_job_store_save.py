@@ -32,18 +32,23 @@ class TestAtomicSave(unittest.TestCase):
         return sorted(p.name for p in self.store.queue_dir.glob("*.tmp"))
 
     def test_many_threads_saving_the_same_job_all_succeed(self) -> None:
+        # Estrés a propósito muy por encima de la app (que guarda unas pocas
+        # veces por segundo): en Windows un lector abierto impide reemplazar el
+        # archivo, y así se reproduce el PermissionError que vio el rastro.
         errores: list = []
 
         def guardar(n: int) -> None:
             try:
-                for _ in range(20):
+                for _ in range(40):
                     copia = self.store._load(self.store._path(self.job.id))
+                    self.assertIsNotNone(copia, "un registro ocupado no es un registro ausente")
                     copia.attempts = n
                     self.store.save(copia)
+                    self.store.all()  # leer todo a la vez que otros escriben
             except Exception as e:  # noqa: BLE001
                 errores.append(e)
 
-        hilos = [threading.Thread(target=guardar, args=(i,)) for i in range(6)]
+        hilos = [threading.Thread(target=guardar, args=(i,)) for i in range(8)]
         for h in hilos:
             h.start()
         for h in hilos:

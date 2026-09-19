@@ -40,9 +40,10 @@ CANCELLED = "cancelled"
 _ACTIVE = {PENDING, EXTRACTING, RUNNING}
 _CLEARABLE = {ERROR, CANCELLED}
 
-# Guardar un registro puede chocar un instante con el antivirus, el indexador o
-# el otro hilo que guarda el mismo job: se reintenta ~0.6 s antes de rendirse.
-_SAVE_RETRIES = 4
+# Un registro puede estar bloqueado un instante por el antivirus o el indexador:
+# se reintenta ~0.5 s antes de rendirse. La contención entre nuestros propios
+# hilos NO se resuelve reintentando, sino con `_io_lock` (ver JobStore.save).
+_SAVE_RETRIES = 5
 _SAVE_BACKOFF = 0.05
 
 DEFAULT_LANGUAGE = "es"
@@ -126,6 +127,11 @@ class JobStore:
         self.work_dir = self.base / "work"
         for d in (self.queue_dir, self.logs_dir, self.work_dir):
             d.mkdir(parents=True, exist_ok=True)
+        # En Windows, un lector abierto impide reemplazar el archivo: leer y
+        # escribir registros desde el hilo de Qt y el del worker a la vez se
+        # estorba de verdad, y reintentar solo lo hace improbable. Serializar
+        # nuestra propia E/S lo vuelve imposible (spec 027).
+        self._io_lock = threading.RLock()
 
     # --- persistencia ---------------------------------------------------------
     def _path(self, job_id: str) -> Path:
@@ -134,31 +140,33 @@ class JobStore:
     def save(self, job: TranscriptionJob) -> None:
         """Escritura atómica del registro, tolerante a bloqueos momentáneos.
 
-        El temporal lleva pid+hilo: el hilo de Qt y el del worker guardan el
-        MISMO job a la vez y con un nombre fijo se pisaban (visto en el rastro:
-        `PermissionError` al reemplazar, y el job acabó marcado como fallido).
-        Y `os.replace` puede dar "Acceso denegado" en Windows si el antivirus o
-        el indexador tienen el archivo abierto ese instante: se reintenta un
-        momento antes de rendirse (spec 027).
+        Tres capas, porque el fallo real (visto en el rastro: `PermissionError`
+        al reemplazar, y el job marcado como fallido) tenía dos causas:
+
+        1. `_io_lock`: nuestros hilos no se pisan entre ellos.
+        2. temporal con pid+hilo: si aun así coincidieran (otro proceso), cada
+           escritor tiene el suyo.
+        3. reintento corto: para el antivirus o el indexador, que son de fuera.
         """
         path = self._path(job.id)
         tmp = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
         datos = json.dumps(asdict(job), indent=2, ensure_ascii=False)
-        try:
-            for intento in range(_SAVE_RETRIES):
-                try:
-                    tmp.write_text(datos, encoding="utf-8")
-                    os.replace(tmp, path)
-                    return
-                except OSError:
-                    if intento == _SAVE_RETRIES - 1:
-                        raise
-                    time.sleep(_SAVE_BACKOFF * (intento + 1))
-        finally:
+        with self._io_lock:
             try:
-                tmp.unlink()  # si algo falló, no dejar basura en la cola
-            except OSError:
-                pass
+                for intento in range(_SAVE_RETRIES):
+                    try:
+                        tmp.write_text(datos, encoding="utf-8")
+                        os.replace(tmp, path)
+                        return
+                    except OSError:
+                        if intento == _SAVE_RETRIES - 1:
+                            raise
+                        time.sleep(_SAVE_BACKOFF * (intento + 1))
+            finally:
+                try:
+                    tmp.unlink()  # si algo falló, no dejar basura en la cola
+                except OSError:
+                    pass
 
     def _load(self, path: Path) -> Optional[TranscriptionJob]:
         try:
@@ -184,24 +192,24 @@ class JobStore:
         except Exception:
             return None  # JSON corrupto/parcial: se ignora, nunca rompe la cola
 
-    @staticmethod
-    def _read(path: Path) -> str:
-        """Lee el registro reintentando si está bloqueado un instante.
+    def _read(self, path: Path) -> str:
+        """Lee el registro sin cruzarse con una escritura, y reintenta si acaso.
 
-        Mientras otro hilo hace `os.replace` sobre este archivo, Windows puede
-        negar la lectura; sin reintento, `_load` devolvía None y el job parecía
+        Un lector abierto impide reemplazar el archivo, así que leer va bajo el
+        mismo lock que escribir. Sin esto, `_load` devolvía None y el job parecía
         no existir — que es como se cuela un duplicado en la cola (spec 027).
         "No existe" no se reintenta: eso es una respuesta, no un tropiezo.
         """
-        for intento in range(_SAVE_RETRIES):
-            try:
-                return path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                raise
-            except OSError:
-                if intento == _SAVE_RETRIES - 1:
+        with self._io_lock:
+            for intento in range(_SAVE_RETRIES):
+                try:
+                    return path.read_text(encoding="utf-8")
+                except FileNotFoundError:
                     raise
-                time.sleep(_SAVE_BACKOFF * (intento + 1))
+                except OSError:
+                    if intento == _SAVE_RETRIES - 1:
+                        raise
+                    time.sleep(_SAVE_BACKOFF * (intento + 1))
         return ""  # inalcanzable: el último intento levanta
 
     def all(self) -> List[TranscriptionJob]:

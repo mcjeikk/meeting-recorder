@@ -145,11 +145,16 @@ archivos de menos de 2 minutos**: ahí manda el piso de 60 s del estimado y el
 porcentaje no significa nada (hallazgo F2 de la spec 025).
 
 Este rastro se pagó solo en su primer lote real: destapó un `PermissionError` al
-guardar un registro de la cola que marcaba el job como fallido. Dos hilos (Qt y
-worker) guardaban el mismo job con un temporal de nombre fijo. Arreglado en la
-spec 027: temporal por proceso+hilo, reintento corto al guardar Y al leer, y
-"no existe" se responde al instante (reintentarlo haría pasar por ausente un
-registro ocupado, que es como se cuela un duplicado en la cola).
+guardar un registro de la cola que marcaba el job como **fallido** (se salvó por
+el reintento). Spec 027, y la trampa de fondo: **en Windows un lector abierto
+impide `os.replace`**, así que los hilos de Qt y del worker se estorbaban entre
+ellos y reintentar solo lo hacía improbable (el test de estrés fallaba 1 de cada
+3). `JobStore` ahora serializa su propia E/S con `_io_lock`; el temporal lleva
+pid+hilo y el reintento corto queda para lo de fuera (antivirus, indexador).
+`_load` reintenta al leer, pero **"no existe" se responde al instante**: dar por
+ausente un registro ocupado es justo como se cuela un duplicado en la cola.
+Regla al tocar esto: un test de concurrencia que pasa una vez no prueba nada
+(correrlo ~12 veces).
 
 ## Verificación rápida
 
