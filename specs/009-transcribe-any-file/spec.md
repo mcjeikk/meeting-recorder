@@ -15,6 +15,7 @@
 Decisions encoded from the user request, existing Recorder patterns, and desktop transcription UX (picker + drop, one queue, source file stays put). Not blocked on interactive Q&A.
 
 - Q: Where should transcript results for an imported file live? → A: Next to the source file, in a Transcripciones folder named from the file stem (same layout as meeting recordings). Do not copy the original into Grabaciones.
+  **Superseded 2026-09-09 by spec 014**: new imports write user-visible transcripts under Carpeta de salida (`Transcripciones/<stem>/`). The original file still is not copied.
 - Q: What happens if the user imports a path that already finished successfully? → A: Do not start a duplicate job; tell the user a transcript already exists and let them open it.
 - Q: How should import errors be shown so recording is not disrupted? → A: In-window, non-modal message (status/banner). The file picker itself may be modal because the user invoked it. No error dialog that must be dismissed before capture can continue.
 - Q: Can one action enqueue several files? → A: Yes — enqueue every supported file; skip and report unsupported items; the existing sequential worker processes them one at a time.
@@ -96,7 +97,7 @@ As the user, I want the interface to separate “record a meeting” from “tra
 - **FR-003**: Choosing one or more supported files MUST enqueue them on the **existing** durable transcription queue (no parallel queue or separate status surface).
 - **FR-004**: Imported jobs MUST use the preset and language in effect at enqueue time, with the same snapshot immutability as meeting jobs.
 - **FR-005**: The original media file MUST remain in its original location (the app does not move or require copying it into the recordings folder).
-- **FR-006**: Transcript results for an imported file MUST be as discoverable as meeting transcripts: openable from the existing **Abrir** control, stored in a Transcripciones folder next to the source file, named from the source file’s stem.
+- **FR-006**: Transcript results for an imported file MUST be as discoverable as meeting transcripts: openable from the existing **Abrir** control. **Superseded by 014**: stored under Carpeta de salida in `Transcripciones/<stem>/`, not next to the source file. The original media stays in place (FR-005).
 - **FR-007**: The window MUST accept drag-and-drop of supported files as an equivalent enqueue path to the picker.
 - **FR-008**: Unsupported types, folders, and missing sibling tool MUST produce a clear in-window, non-modal message (status or banner). They MUST NOT freeze the UI, MUST NOT require dismissing a dialog before recording can continue, and MUST NOT interrupt capture. The file picker may be modal only because the user opened it.
 - **FR-009**: Import MUST be allowed while a recording is active; background transcription MUST still yield to recording (Recording Always Wins).
@@ -131,7 +132,7 @@ As the user, I want the interface to separate “record a meeting” from “tra
 - Single primary user; one transcription worker processing jobs sequentially remains the product model.
 - Extending the existing transcription panel/queue is better UX than a new window (desktop recorders keep import next to existing transcribe settings; a second window would hide progress and duplicate preset/language).
 - **Transcribir archivo…** is a button in the current output/transcription group, with a short hint that preset and language apply to both recordings and imported files; drag-and-drop is a first-class companion, not a hidden extra.
-- Original files stay in place (do not copy into Grabaciones): avoids duplicating large videos and mixing personal media with meeting recordings. Transcripts sit beside the source, matching today’s meeting layout (`…/Transcripciones/<nombre>/`).
+- Original files stay in place (do not copy into Grabaciones): avoids duplicating large videos and mixing personal media with meeting recordings. User-visible transcripts of new imports follow Carpeta de salida (`…/Transcripciones/<nombre>/`); see spec 014.
 - Job display name is the source file’s name (sanitized only as needed for result folders), analogous to how meeting files are named from the window title.
 - Working extracted audio and the durable queue continue to live outside cloud-synced folders, as they do for meetings.
 - File picker filters match the sibling tool’s accepted audio/video types; validation is by type/extension (and “no usable audio” at processing time).

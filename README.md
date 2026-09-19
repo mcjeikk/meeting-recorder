@@ -68,8 +68,9 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
 
 1. **¿Qué quieres grabar?** → elige una **ventana** de la lista o una **pantalla**
    (si tienes varios monitores, cada uno aparece como «Pantalla N»).
-   Verás una **vista previa** (miniatura) de lo que se grabará. Usa **🔄 Actualizar**
-   para refrescar la lista de ventanas abiertas.
+   Verás una **vista previa** (miniatura) de lo que se grabará. El botón 🔄
+   actualiza la lista. La rueda sobre una lista desplegable **no cambia** la
+   opción salvo que hayas hecho clic en ella.
 2. **Micrófono** → elige tu micrófono. El medidor muestra el nivel **en vivo,
    incluso antes de grabar** (para que verifiques el sonido al configurar).
    👉 **Puedes cambiar de micrófono o silenciarlo (botón 🎤/🔇) durante la grabación.**
@@ -93,8 +94,9 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
 - **Ctrl + Shift + P** → pausar / reanudar. *(El tiempo en pausa no cuenta en el video.)*
 - **Ctrl + Shift + M** → silenciar / activar el micrófono. *(Muteado = se graba
   silencio en tu pista, sin perder la sincronía.)*
-- **La ventana del recorder NO aparece en la grabación**: se excluye de la captura
-  pero sigue visible y usable para ti (incluso con vista previa en vivo).
+- **Ocultar esta ventana en grabaciones y capturas** (casilla en *Fuente*,
+  marcada por defecto): el Grabador no sale en el video ni en recortes de
+  pantalla. Desmárcala si quieres que se vea.
 - **Ícono en la bandeja** para control rápido. La **X** cierra la app (si hay una
   grabación, la finaliza antes de salir). **Ctrl+C** en la consola también la cierra.
 - **Sincronización automática**: el audio se alinea con el video aunque cada flujo
@@ -149,8 +151,9 @@ grabación, la app la transcribe sola con el proyecto **Transcriptor** (faster-w
 + pyannote, en local). También puedes transcribir **cualquier audio o vídeo que
 ya tengas** (podcast, exportación de llamada, grabación antigua, etc.) con
 **Transcribir archivo…** o arrastrando el archivo a la ventana: usa la misma
-cola, velocidad e idioma. El archivo original no se mueve; los resultados
-quedan junto a él (o junto a tus videos, si es una reunión):
+cola, calidad, **uso del PC** e idioma. El archivo original no se mueve; las
+transcripciones (de reuniones y de archivos importados) quedan en la
+**Carpeta de salida**:
 
 ```
 <carpeta de salida>\Transcripciones\<nombre_grabacion>\
@@ -163,18 +166,37 @@ quedan junto a él (o junto a tus videos, si es una reunión):
 
 - **La grabación siempre manda**: la transcripción nunca arranca mientras grabas y,
   si empiezas a grabar a mitad de una, el proceso se **pausa por completo** (cero
-  CPU, sin perder el avance) y se reanuda al detener. Además corre con prioridad
-  baja y deja 2 núcleos libres.
+  CPU, sin perder el avance) y se reanuda al detener.
+- **Uso del PC** (sección 4, independiente de Rápido/Equilibrado/Máxima): por
+  defecto **Usar más CPU** (casi todos los núcleos; el escritorio puede ir
+  pesado). **Dejar el PC usable** limita núcleos y baja la prioridad para que
+  otras apps no se congelen (tarda más; puedes usar Máxima calidad igual).
+  Puedes cambiarlo a mitad de una transcripción: si el trabajo aún no arrancó,
+  usa el nuevo presupuesto de núcleos; si ya va, solo cambia la prioridad (sin
+  reiniciar ni perder avance; más/menos hilos aplican al siguiente arranque).
+  La diarización también respeta el tope de hilos al lanzar (OpenMP/torch).
 - **Sobrevive al cierre de la app**: puedes cerrar el Grabador con una transcripción
   en curso; el proceso continúa solo y al reabrir la app se retoma el estado
   (la cola es persistente en `%LOCALAPPDATA%\MeetingRecorder\transcripts`).
-- **Cola y reintentos**: varias grabaciones (y archivos importados) se transcriben
-  en orden, de a una. Si la identificación de hablantes falla (memoria, token), se
-  reintenta automáticamente sin diarización en vez de perder horas de trabajo.
+- **Hablantes**: en **Opciones de transcripción** (plegable). Equilibrado y Máxima
+  identifican hablantes. **Auto** deja que el modelo cuente; si ya sabes el
+  número (entrevista 1 a 1 = **2**) elige 2–6. **Rápido** omite hablantes a
+  propósito. Si un archivo se queda sin memoria, el primer reintento usa un
+  modelo más ligero **manteniendo hablantes**; solo un fallo posterior puede
+  omitirlos, y lo indica en la cola.
+- **Cola y reintentos**: varias grabaciones (y archivos importados) compatibles
+  (mismo idioma, calidad, hablantes y carpeta de salida) se transcriben en un
+  solo proceso para no recargar los modelos. Si la identificación de hablantes
+  falla (memoria, token), se reintenta en vez de perder horas de trabajo.
   Puedes encolar un archivo mientras grabas; el trabajo espera o se pausa hasta
   que termine la captura.
-- **GPU automática**: hoy corre en CPU (~2x la duración del audio en este equipo).
-  El día que el equipo tenga GPU NVIDIA, la usará solo, sin tocar configuración.
+- **Cuándo estará listo**: el aviso muestra la hora estimada de término
+  (`listo ~21:40`) y, en un lote, la del lote completo. La estimación sale de la
+  duración del audio por un factor medido en este equipo (~1.1× con "Usar más
+  CPU", ~1.45× con "Dejar el PC usable") y se va afinando con tu propio historial.
+  Si pausas por una grabación, la estimación se congela hasta que se retoma.
+- **GPU automática**: hoy corre en CPU. El día que el equipo tenga GPU NVIDIA, la
+  usará solo, sin tocar configuración.
 - **Sin hablantes** en el resultado = falta el token de HuggingFace del Transcriptor
   (ver su README) o la diarización falló; la transcripción del texto no se pierde.
 
@@ -189,11 +211,17 @@ quedan junto a él (o junto a tus videos, si es una reunión):
   una carpeta hermana (la ruta se autodetecta; se puede fijar con `transcriptor_dir` en
   `%APPDATA%\MeetingRecorder\config.json`, junto a `transcription_language` y
   `pause_transcription_while_recording`).
-- Verificación rápida de toda la integración (sin pagar la diarización):
+- La cola guarda historial **reciente**: los trabajos terminados se olvidan tras 30 días
+  (o cuando pasan de 200), junto con sus logs. Tus transcripciones no se tocan nunca, y
+  si vuelves a añadir un archivo ya transcrito la app lo reconoce mirando la carpeta de
+  salida, así que no repite el trabajo.
+- Verificación rápida de toda la integración. Toma una **muestra** de la última
+  grabación y trabaja en una carpeta temporal: no toca tus transcripciones ni tu cola.
 
 ```powershell
-python verify_transcription.py --quick          # última grabación
-python verify_transcription.py "ruta.mp4" --force   # re-transcribir una concreta
+python verify_transcription.py --quick                # muestra de 60 s, con hablantes
+python verify_transcription.py --quick --no-speakers  # lo más rápido
+python verify_transcription.py "ruta.mp4" --force     # transcribir una concreta, completa
 ```
 
 ---
