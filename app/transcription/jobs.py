@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.transcription.integration import transcripts_base
+from app.transcription.pc_impact import (
+    DEFAULT_PC_IMPACT,
+    LEGACY_JOB_PC_IMPACT,
+    normalize_pc_impact,
+)
 from app.transcription.presets import DEFAULT_PRESET, get_preset, normalize_preset
 
 # Estados de un trabajo. "running" con PID muerto se resuelve en la
@@ -50,7 +55,16 @@ def _canonical_media_path(path: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
+def normalize_num_speakers(value: object) -> int:
+    """0 = auto; 1–12 exactos; el resto → auto."""
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return n if 1 <= n <= 12 else 0
 
 
 def normalize_language(value: object) -> str:
@@ -79,6 +93,9 @@ class TranscriptionJob:
     model: str = _EQ.model
     beam_size: int = _EQ.beam_size
     no_diarize: bool = False  # preset Rápido o reintento degradado tras fallo de diarización
+    pc_impact: str = DEFAULT_PC_IMPACT  # usable|full; snapshot al encolar
+    output_base: str = ""  # Carpeta de salida al encolar; vacío = padre del media (legacy)
+    num_speakers: int = 0  # 0 = auto; 1–12 = --speakers N
     created_at: str = field(default_factory=_now)
     started_at: str = ""
     finished_at: str = ""
@@ -122,6 +139,11 @@ class JobStore:
             job = TranscriptionJob(**campos)
             # Jobs antiguos sin preset → equilibrado (defaults del dataclass).
             job.preset = normalize_preset(getattr(job, "preset", DEFAULT_PRESET))
+            if "pc_impact" not in data:
+                job.pc_impact = LEGACY_JOB_PC_IMPACT
+            else:
+                job.pc_impact = normalize_pc_impact(job.pc_impact)
+            job.num_speakers = normalize_num_speakers(getattr(job, "num_speakers", 0))
             if "model" not in data or "beam_size" not in data:
                 p = get_preset(job.preset)
                 if "model" not in data:
@@ -144,12 +166,16 @@ class JobStore:
         media_path: str,
         language: str = "es",
         preset: Optional[str] = None,
+        pc_impact: Optional[str] = None,
+        output_base: Optional[str] = None,
+        num_speakers: Optional[int] = None,
     ) -> Optional[TranscriptionJob]:
         """Crea un job pendiente. Devuelve None si ya hay uno activo o terminado
         para el mismo archivo (dedupe: re-encolar no debe duplicar horas de CPU).
 
-        `preset` se captura (snapshot) al encolar; cambios posteriores en la UI
-        no mutan este job.
+        `preset`, `pc_impact` y `output_base` se capturan al encolar; cambios
+        posteriores en la UI no mutan este job. `output_base` vacío = destino
+        junto al media (jobs antiguos).
         """
         media_path = _canonical_media_path(media_path)
         existente = self.find_by_media(media_path)
@@ -157,6 +183,9 @@ class JobStore:
             return None
         preset_id = normalize_preset(preset)
         p = get_preset(preset_id)
+        dest = ""
+        if output_base is not None and str(output_base).strip():
+            dest = _canonical_media_path(str(output_base).strip())
         job = TranscriptionJob(
             media_path=media_path,
             language=normalize_language(language),
@@ -164,6 +193,11 @@ class JobStore:
             model=p.model,
             beam_size=p.beam_size,
             no_diarize=p.no_diarize,
+            pc_impact=normalize_pc_impact(
+                pc_impact if pc_impact is not None else DEFAULT_PC_IMPACT
+            ),
+            output_base=dest,
+            num_speakers=normalize_num_speakers(num_speakers),
         )
         job.log_path = str(self.logs_dir / f"{Path(media_path).stem}_{job.id}.log")
         self.save(job)
@@ -176,6 +210,18 @@ class JobStore:
                 return job
         return None
 
+    def set_pc_impact_on_open(self, pc_impact: object) -> int:
+        """Reasigna Uso del PC a jobs pending/extracting/running. No toca done."""
+        impact = normalize_pc_impact(pc_impact)
+        n = 0
+        for job in self.active():
+            if job.pc_impact == impact:
+                continue
+            job.pc_impact = impact
+            self.save(job)
+            n += 1
+        return n
+
     def pending(self) -> List[TranscriptionJob]:
         return [j for j in self.all() if j.status == PENDING]
 
@@ -184,14 +230,38 @@ class JobStore:
 
     def retry(self, job_id: str) -> Optional[TranscriptionJob]:
         """Re-encola un job en error (botón Reintentar de la UI)."""
+        from app.transcription.process_guard import apply_oom_degrade, log_looks_like_oom
+
         job = self._load(self._path(job_id))
         if not job or job.status != ERROR:
             return None
+        if log_looks_like_oom(job.error):
+            apply_oom_degrade(job)
         job.status = PENDING
         job.error = ""
         job.pid = None
         self.save(job)
         return job
+
+    def queue_counts(self, live_id: str = "") -> dict:
+        """Resumen para el banner: en curso / espera / fallidas (no incluye done).
+
+        En un lote CLI, varios JSON pueden estar `running` a la vez; solo
+        `live_id` cuenta como en curso, el resto del lote como en espera.
+        """
+        n_run = n_pend = n_fail = 0
+        live = str(live_id or "")
+        for job in self.all():
+            if job.status in (EXTRACTING, RUNNING):
+                if live and job.status == RUNNING and job.id != live:
+                    n_pend += 1
+                else:
+                    n_run += 1
+            elif job.status == PENDING:
+                n_pend += 1
+            elif job.status in _CLEARABLE:
+                n_fail += 1
+        return {"running": n_run, "pending": n_pend, "failed": n_fail}
 
     def cancel(self, job_id: str) -> Optional[TranscriptionJob]:
         """Marca pending/extracting/running como cancelled. No toca done/error."""
@@ -221,3 +291,65 @@ class JobStore:
 
     def count_clearable(self) -> int:
         return sum(1 for j in self.all() if j.status in _CLEARABLE)
+
+    def prune_history(self, *, now: Optional[datetime] = None) -> dict:
+        """Poda el histórico: terminados viejos o de más, y sus logs (spec 023).
+
+        Silenciosa y tolerante a fallos: un unlink que falla se salta y se
+        reintenta en el próximo arranque (una limpieza que revienta es una
+        limpieza que deja de correr). No modifica ningún registro.
+        """
+        from app.transcription.retention import (
+            MAX_DELETIONS_PER_PASS,
+            oldest_first,
+            prunable_job_ids,
+            prunable_log_paths,
+        )
+
+        jobs = self.all()
+        sobran = prunable_job_ids(jobs, now=now or datetime.now())
+        # Presupuesto por pasada: el resto se va en los próximos arranques.
+        esta_vez = set(oldest_first(jobs, sobran))
+        n_jobs = 0
+        for job_id in esta_vez:
+            try:
+                self._path(job_id).unlink(missing_ok=True)
+                n_jobs += 1
+            except OSError:
+                pass
+        vivos = [j for j in jobs if j.id not in esta_vez]
+        n_logs = 0
+        for log in prunable_log_paths(self.logs_dir, vivos)[:MAX_DELETIONS_PER_PASS]:
+            try:
+                log.unlink()
+                n_logs += 1
+            except OSError:
+                pass
+        return {"records": n_jobs, "logs": n_logs}
+
+    def purge_orphan_work_dirs(self) -> int:
+        """Borra WAV de trabajo de jobs ya terminados o inexistentes.
+
+        `_cleanup_wav` puede fallar en silencio (el CLI aún cerrando el handle,
+        antivirus) y nadie volvía a pasar: son WAV de 16 kHz de reuniones
+        completas, cientos de MB. Devuelve los bytes liberados.
+        """
+        vivos = {j.id for j in self.all() if j.status in _ACTIVE}
+        liberados = 0
+        for carpeta in self.work_dir.glob("*"):
+            if not carpeta.is_dir() or carpeta.name in vivos:
+                continue
+            for f in carpeta.rglob("*"):
+                if not f.is_file():
+                    continue
+                try:
+                    size = f.stat().st_size
+                    f.unlink()
+                    liberados += size
+                except OSError:
+                    pass
+            try:
+                carpeta.rmdir()
+            except OSError:
+                pass
+        return liberados

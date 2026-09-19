@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from app.transcription.integration import result_dir_for
+from app.transcription.integration import result_dir_for, transcript_exists
 from app.transcription.jobs import (
     DONE,
     EXTRACTING,
@@ -81,6 +81,7 @@ def classify_import(
     path: str,
     *,
     tool_available: bool,
+    output_base: str = "",
 ) -> ImportResult:
     raw = Path(path)
     name = raw.name or str(raw)
@@ -127,7 +128,12 @@ def classify_import(
                 message=f"Ya está en cola: {name}",
             )
         if existente.status == DONE:
-            result = existente.result_dir or str(result_dir_for(Path(existente.media_path)))
+            result = existente.result_dir or str(
+                result_dir_for(
+                    Path(existente.media_path),
+                    output_base=getattr(existente, "output_base", "") or None,
+                )
+            )
             return ImportResult(
                 path=canonical,
                 kind=ALREADY_DONE,
@@ -136,6 +142,16 @@ def classify_import(
                 result_dir=result,
                 message=f"Ya hay una transcripción de {name}",
             )
+
+    # Sin registro: lo recuerda el disco (el histórico se poda, spec 023).
+    if transcript_exists(canonical, output_base or None):
+        return ImportResult(
+            path=canonical,
+            kind=ALREADY_DONE,
+            name=name,
+            result_dir=str(result_dir_for(Path(canonical), output_base=output_base or None)),
+            message=f"Ya hay una transcripción de {name}",
+        )
 
     return ImportResult(path=canonical, kind=OK, name=name)
 
@@ -148,18 +164,27 @@ def enqueue_imports(
     language: str,
     preset: str,
     tool_available: bool,
+    output_base: str = "",
 ) -> List[ImportResult]:
-    """Clasifica cada path y encola los válidos. Nunca copia ni mueve el original."""
+    """Clasifica cada path y encola los válidos. Nunca copia ni mueve el original.
+
+    `output_base` es la Carpeta de salida configurada: con ella se resuelve el
+    mismo destino que usaría el job, para saber si ya hay transcripción en disco.
+    """
     results: List[ImportResult] = []
     for raw in paths:
-        item = classify_import(store, raw, tool_available=tool_available)
+        item = classify_import(
+            store, raw, tool_available=tool_available, output_base=output_base
+        )
         if item.kind != OK:
             results.append(item)
             continue
         snap = enqueue(item.path, language, preset)
         if snap is None:
             # Carrera o dedupe del store: re-clasificar.
-            again = classify_import(store, item.path, tool_available=tool_available)
+            again = classify_import(
+                store, item.path, tool_available=tool_available, output_base=output_base
+            )
             if again.kind == OK:
                 again.kind = ALREADY_ACTIVE
                 again.message = f"Ya está en cola: {item.name}"

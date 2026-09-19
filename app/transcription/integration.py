@@ -23,14 +23,22 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from app.encode.ffmpeg import get_ffmpeg_exe
+from app.transcription.pc_impact import (
+    BELOW_NORMAL_PRIORITY,
+    DEFAULT_PC_IMPACT,
+    priority_class,
+    thread_env,
+    threads_for_impact,
+)
 
-# En Windows, evita ventanas de consola y deja la transcripción en baja prioridad
-# para no competir con una grabación en curso.
+# En Windows, evita ventanas de consola. La prioridad del CLI de transcripción
+# la elige Uso del PC (usable → IDLE; full → BELOW_NORMAL). ffmpeg de extracción
+# sigue en BELOW_NORMAL (corta).
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
-BELOW_NORMAL = 0x00004000 if sys.platform == "win32" else 0
+BELOW_NORMAL = BELOW_NORMAL_PRIORITY
 
 
 # --- Ubicaciones ---------------------------------------------------------------
@@ -153,6 +161,7 @@ def extract_audio_for_transcription(
         args = [
             get_ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(media), *map_args,
+            "-vn", "-sn",
             "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(out),
         ]
         proc = subprocess.run(
@@ -168,34 +177,45 @@ def extract_audio_for_transcription(
 # --- Invocación del Transcriptor -------------------------------------------------
 def build_command(
     transcriptor_dir: str,
-    wav: Path,
+    wav: Path | Sequence[Path],
     language: str,
     out_dir: Path,
     extra_args: Tuple[str, ...] = (),
 ) -> List[str]:
-    """Línea de comandos para transcribir `wav` con el CLI del Transcriptor.
+    """Línea de comandos para transcribir uno o más WAV con el CLI hermano.
 
-    -u / -X utf8: salida sin buffer y en UTF-8 (el log se va leyendo en vivo).
-    --output con ruta ABSOLUTA: transcribe.py escribe en <out_dir>/<stem>/.
+    Varios WAV en el mismo argv = una sola carga de modelos. --output absoluta.
     """
     py, script = transcriptor_paths(transcriptor_dir)
+    if isinstance(wav, (str, Path)):
+        wavs = [Path(wav)]
+    else:
+        wavs = [Path(w) for w in wav]
     return [
-        str(py), "-u", "-X", "utf8", str(script), str(wav),
+        str(py), "-u", "-X", "utf8", str(script),
+        *[str(w) for w in wavs],
         "--language", language, "--output", str(out_dir), *extra_args,
     ]
 
 
-def subprocess_env() -> dict:
-    """Entorno para el subproceso: modo plano parseable y UTF-8 garantizado."""
+def subprocess_env(pc_impact: object = DEFAULT_PC_IMPACT) -> dict:
+    """Entorno del CLI: modo plano, UTF-8, y tope de hilos OpenMP/torch."""
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["TRANSCRIPTOR_PLAIN"] = "1"
+    env.update(thread_env(pc_impact))
     return env
 
 
-def cpu_threads_for_job() -> int:
-    """Hilos para el ASR dejando margen a una grabación simultánea."""
-    return max(1, (os.cpu_count() or 4) - 2)
+def cpu_threads_for_job(
+    pc_impact: object = DEFAULT_PC_IMPACT, *, cpu_count: Optional[int] = None
+) -> int:
+    """Hilos ASR + diarización según Uso del PC (no solo cpu-2)."""
+    return threads_for_impact(pc_impact, cpu_count=cpu_count)
+
+
+def creationflags_for_job(pc_impact: object = DEFAULT_PC_IMPACT) -> int:
+    return NO_WINDOW | priority_class(pc_impact)
 
 
 def _absolute_media(media: Path) -> Path:
@@ -206,19 +226,50 @@ def _absolute_media(media: Path) -> Path:
         return path if path.is_absolute() else Path.cwd() / path
 
 
-def output_dir_for(media: Path) -> Path:
-    """Las transcripciones quedan junto a las grabaciones, descubribles a mano.
+def _resolved_output_base(output_base: object = None) -> Optional[Path]:
+    if output_base is None:
+        return None
+    text = str(output_base).strip()
+    if not text:
+        return None
+    return _absolute_media(Path(text))
 
-    Siempre absoluta: el CLI del Transcriptor hace `RAIZ / --output / stem`, y
-    una ruta relativa acaba DENTRO del proyecto hermano, no en Carpeta de salida.
+
+def output_dir_for(media: Path, output_base: object = None) -> Path:
+    """Carpeta Transcripciones visible (absoluta) para el CLI `--output`.
+
+    Si hay `output_base` (Carpeta de salida al encolar), los resultados van ahí.
+    Si no (jobs viejos / reuniones cuyo MP4 ya vive en esa carpeta), se usa el
+    padre del media. Relativa acaba DENTRO del Transcriptor: siempre absoluta.
     """
+    base = _resolved_output_base(output_base)
+    if base is not None:
+        return base / "Transcripciones"
     return _absolute_media(media).parent / "Transcripciones"
 
 
-def result_dir_for(media: Path) -> Path:
-    """Carpeta final de resultados de un MP4: <grabaciones>/Transcripciones/<stem>/."""
+def result_dir_for(media: Path, output_base: object = None) -> Path:
+    """Carpeta final: <destino>/Transcripciones/<stem>/."""
     media = _absolute_media(media)
-    return output_dir_for(media) / media.stem
+    return output_dir_for(media, output_base=output_base) / media.stem
+
+
+def transcript_exists(media_path: object, output_base: object = None) -> bool:
+    """¿Ya hay transcripción de este archivo en el destino? (spec 023)
+
+    Al podar el histórico, el registro `done` deja de ser quien recuerda que un
+    archivo ya se transcribió: lo recuerda el disco. Se mira `transcripcion.txt`,
+    el mismo artefacto con el que el worker decide el éxito. Si el destino no se
+    puede consultar, se responde que NO existe: repetir trabajo es aceptable,
+    perder una transcripción no.
+    """
+    try:
+        return (
+            result_dir_for(Path(str(media_path)), output_base=output_base)
+            / "transcripcion.txt"
+        ).is_file()
+    except OSError:
+        return False
 
 
 def transcribe(media_path: str, language: Optional[str] = "es") -> str:
@@ -236,17 +287,19 @@ def transcribe(media_path: str, language: Optional[str] = "es") -> str:
         )
     media = Path(media_path)
     wav, _desc = extract_audio_for_transcription(media, transcripts_base() / "work" / media.stem)
-    out_dir = output_dir_for(media)
+    dest = getattr(cfg, "output_dir", None)
+    out_dir = output_dir_for(media, output_base=dest)
+    impact = getattr(cfg, "transcription_pc_impact", DEFAULT_PC_IMPACT)
     cmd = build_command(
         cfg.transcriptor_dir, wav, language or "es", out_dir,
-        extra_args=("--threads", str(cpu_threads_for_job())),
+        extra_args=("--threads", str(cpu_threads_for_job(impact))),
     )
     proc = subprocess.run(
-        cmd, cwd=cfg.transcriptor_dir, env=subprocess_env(),
+        cmd, cwd=cfg.transcriptor_dir, env=subprocess_env(impact),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=NO_WINDOW | BELOW_NORMAL,
+        creationflags=creationflags_for_job(impact),
     )
-    result = result_dir_for(media) / "transcripcion.txt"
+    result = result_dir_for(media, output_base=dest) / "transcripcion.txt"
     if proc.returncode != 0 or not result.exists():
         salida = proc.stdout.decode("utf-8", "replace")[-800:]
         raise RuntimeError(f"La transcripción falló (exit {proc.returncode}):\n{salida}")

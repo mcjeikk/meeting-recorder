@@ -46,8 +46,8 @@ PRESETS: Dict[str, TranscriptionPreset] = {
         beam_size=5,
         no_diarize=False,
         hint_es=(
-            "Calidad habitual; con hablantes; en CPU suele rondar ~2× la duración "
-            "del audio (varía según máquina)."
+            "Calidad habitual; con hablantes; en CPU suele tardar algo más que la "
+            "duración del audio (medido ~1.1×; ~1.45× si dejas el PC usable)."
         ),
     ),
     PRESET_MAXIMA: TranscriptionPreset(
@@ -88,10 +88,13 @@ def to_cli_args(preset_id: object) -> List[str]:
 
 
 def cli_args_from_job_fields(
-    *, model: str, beam_size: int, no_diarize: bool
+    *, model: str, beam_size: int, no_diarize: bool, num_speakers: int = 0
 ) -> List[str]:
     """Argv desde campos denormalizados del job (respeta no_diarize degradado)."""
     args = ["--model", model, "--beam-size", str(int(beam_size))]
     if no_diarize:
         args.append("--no-diarize")
+    n = int(num_speakers or 0)
+    if n > 0:
+        args.extend(["--speakers", str(n)])
     return args

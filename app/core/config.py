@@ -175,14 +175,23 @@ class AppConfig:
     transcribe_after_recording: bool = False
     transcription_language: str = "es"        # código ISO o "auto"
     transcription_preset: str = "equilibrado"  # rapido|equilibrado|maxima_calidad
+    transcription_pc_impact: str = "full"  # usable|full — independiente del preset
+    pc_impact_factory_rev: int = 2  # 1=usable (011); 2=full default
+    transcription_num_speakers: int = 0  # 0 = auto; 1–12 = --speakers
     transcriptor_dir: str = field(default_factory=default_transcriptor_dir)
     pause_transcription_while_recording: bool = True  # suspender el proceso al grabar
     # Experimental: silenciar pista de mic si ninguna otra app usa el mic (OS).
     auto_mute_follow_meeting: bool = False
+    # True = esta ventana no sale en grabaciones ni capturas (WDA_EXCLUDEFROMCAPTURE).
+    exclude_window_from_capture: bool = True
 
     @classmethod
     def load(cls) -> "AppConfig":
-        from app.transcription.jobs import normalize_language
+        from app.transcription.jobs import normalize_language, normalize_num_speakers
+        from app.transcription.pc_impact import (
+            apply_factory_pc_impact,
+            normalize_pc_impact,
+        )
         from app.transcription.presets import normalize_preset
 
         path = _config_path()
@@ -192,6 +201,14 @@ class AppConfig:
                 cfg = cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
                 cfg.transcription_preset = normalize_preset(cfg.transcription_preset)
                 cfg.transcription_language = normalize_language(cfg.transcription_language)
+                if "pc_impact_factory_rev" not in data:
+                    cfg.pc_impact_factory_rev = 1
+                if apply_factory_pc_impact(cfg):
+                    cfg.save()
+                cfg.transcription_pc_impact = normalize_pc_impact(cfg.transcription_pc_impact)
+                cfg.transcription_num_speakers = normalize_num_speakers(
+                    getattr(cfg, "transcription_num_speakers", 0)
+                )
                 return cfg
             except Exception:
                 pass  # config corrupta -> usar valores por defecto
@@ -199,12 +216,17 @@ class AppConfig:
         return cfg
 
     def save(self) -> None:
-        from app.transcription.jobs import normalize_language
+        from app.transcription.jobs import normalize_language, normalize_num_speakers
+        from app.transcription.pc_impact import normalize_pc_impact
         from app.transcription.presets import normalize_preset
 
         try:
             self.transcription_preset = normalize_preset(self.transcription_preset)
             self.transcription_language = normalize_language(self.transcription_language)
+            self.transcription_pc_impact = normalize_pc_impact(self.transcription_pc_impact)
+            self.transcription_num_speakers = normalize_num_speakers(
+                getattr(self, "transcription_num_speakers", 0)
+            )
             _config_path().write_text(
                 json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8"
             )

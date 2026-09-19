@@ -129,19 +129,61 @@ class TestRelativeMediaDoesNotLandInSiblingProject(unittest.TestCase):
                 os.chdir(old)
 
 
-class TestImportsStayBesideSource(unittest.TestCase):
-    def test_result_dir_for_file_in_A_ignores_selected_B(self) -> None:
+class TestImportsFollowSelectedFolder(unittest.TestCase):
+    def test_import_from_A_lands_under_selected_B(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             a = Path(tmp) / "old-A"
             b = Path(tmp) / "new-B"
             a.mkdir()
             b.mkdir()
-            media_a = a / "legacy.mp4"
-            cfg = AppConfig(output_dir=str(b))
-            apply_selected_output_dir(cfg, b)
-            result = result_dir_for(media_a)
+            media_a = a / "entrevista.mp4"
+            media_a.write_bytes(b"x")
+            out = output_dir_for(media_a, output_base=b)
+            result = result_dir_for(media_a, output_base=b)
+            self.assertTrue(_under(result, b))
+            self.assertFalse(_under(result, a))
+            self.assertEqual(out, (b / "Transcripciones").resolve())
+            self.assertEqual(
+                result,
+                (b / "Transcripciones" / "entrevista").resolve(),
+            )
+            cmd = build_command(r"C:\Apps\Transcriptor", Path("work.wav"), "es", out)
+            flag = Path(cmd[cmd.index("--output") + 1])
+            self.assertTrue(flag.is_absolute())
+            self.assertTrue(_under(flag, b))
+            self.assertFalse(_under(flag, a))
+
+    def test_empty_output_base_stays_beside_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            a = Path(tmp) / "src"
+            a.mkdir()
+            media = a / "clip.mp4"
+            result = result_dir_for(media, output_base="")
             self.assertTrue(_under(result, a))
-            self.assertFalse(_under(result, b))
+            self.assertEqual(
+                result,
+                (a / "Transcripciones" / "clip").resolve(),
+            )
+
+    def test_enqueue_snapshots_absolute_output_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(base=Path(tmp) / "tx")
+            a = Path(tmp) / "src"
+            b = Path(tmp) / "out"
+            a.mkdir()
+            b.mkdir()
+            media = a / "clip.mp4"
+            media.write_bytes(b"x")
+            job = store.enqueue(str(media), language="es", output_base=str(b))
+            self.assertIsNotNone(job)
+            stored = Path(job.output_base)
+            self.assertTrue(stored.is_absolute())
+            self.assertEqual(stored, b.resolve())
+            result = result_dir_for(Path(job.media_path), output_base=job.output_base)
+            self.assertTrue(_under(result, b))
+            self.assertFalse(_under(result, a))
+            self.assertTrue(media.is_file())
+            self.assertFalse((b / media.name).exists())
 
 
 class TestEnqueueCanonicalPath(unittest.TestCase):
