@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -37,6 +39,11 @@ CANCELLED = "cancelled"
 
 _ACTIVE = {PENDING, EXTRACTING, RUNNING}
 _CLEARABLE = {ERROR, CANCELLED}
+
+# Guardar un registro puede chocar un instante con el antivirus, el indexador o
+# el otro hilo que guarda el mismo job: se reintenta ~0.6 s antes de rendirse.
+_SAVE_RETRIES = 4
+_SAVE_BACKOFF = 0.05
 
 DEFAULT_LANGUAGE = "es"
 _ALLOWED_LANGUAGES = frozenset({"es", "en", "auto"})
@@ -125,16 +132,37 @@ class JobStore:
         return self.queue_dir / f"{job_id}.json"
 
     def save(self, job: TranscriptionJob) -> None:
+        """Escritura atómica del registro, tolerante a bloqueos momentáneos.
+
+        El temporal lleva pid+hilo: el hilo de Qt y el del worker guardan el
+        MISMO job a la vez y con un nombre fijo se pisaban (visto en el rastro:
+        `PermissionError` al reemplazar, y el job acabó marcado como fallido).
+        Y `os.replace` puede dar "Acceso denegado" en Windows si el antivirus o
+        el indexador tienen el archivo abierto ese instante: se reintenta un
+        momento antes de rendirse (spec 027).
+        """
         path = self._path(job.id)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(asdict(job), indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        os.replace(tmp, path)
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
+        datos = json.dumps(asdict(job), indent=2, ensure_ascii=False)
+        try:
+            for intento in range(_SAVE_RETRIES):
+                try:
+                    tmp.write_text(datos, encoding="utf-8")
+                    os.replace(tmp, path)
+                    return
+                except OSError:
+                    if intento == _SAVE_RETRIES - 1:
+                        raise
+                    time.sleep(_SAVE_BACKOFF * (intento + 1))
+        finally:
+            try:
+                tmp.unlink()  # si algo falló, no dejar basura en la cola
+            except OSError:
+                pass
 
     def _load(self, path: Path) -> Optional[TranscriptionJob]:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(self._read(path))
             campos = {k: v for k, v in data.items() if k in TranscriptionJob.__annotations__}
             job = TranscriptionJob(**campos)
             # Jobs antiguos sin preset → equilibrado (defaults del dataclass).
@@ -155,6 +183,26 @@ class JobStore:
             return job
         except Exception:
             return None  # JSON corrupto/parcial: se ignora, nunca rompe la cola
+
+    @staticmethod
+    def _read(path: Path) -> str:
+        """Lee el registro reintentando si está bloqueado un instante.
+
+        Mientras otro hilo hace `os.replace` sobre este archivo, Windows puede
+        negar la lectura; sin reintento, `_load` devolvía None y el job parecía
+        no existir — que es como se cuela un duplicado en la cola (spec 027).
+        "No existe" no se reintenta: eso es una respuesta, no un tropiezo.
+        """
+        for intento in range(_SAVE_RETRIES):
+            try:
+                return path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                raise
+            except OSError:
+                if intento == _SAVE_RETRIES - 1:
+                    raise
+                time.sleep(_SAVE_BACKOFF * (intento + 1))
+        return ""  # inalcanzable: el último intento levanta
 
     def all(self) -> List[TranscriptionJob]:
         jobs = [self._load(p) for p in sorted(self.queue_dir.glob("*.json"))]

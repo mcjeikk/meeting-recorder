@@ -45,6 +45,7 @@ from app.transcription.pc_impact import (
     normalize_pc_impact,
 )
 from app.transcription.batch import compatible_batch
+from app.transcription.event_log import EventLog
 from app.transcription.cli_progress import (
     PHASE_ASR,
     PHASES_WITHOUT_ASR_PERCENT,
@@ -131,6 +132,9 @@ class TranscriptionWorker:
         # Junto a la cola: una cola de prueba (tests, verify) no toca el
         # historial real de la máquina.
         self._speed = SpeedStore(store.base / "speed.json")
+        # Rastro para revisar una cola desatendida (spec 026). Diagnóstico puro:
+        # nadie lo lee para decidir nada y sus fallos son invisibles.
+        self._events = EventLog(store.base / "events.jsonl")
         # Tiempo ACTIVO por job (no de pared): alimenta el historial de velocidad.
         self._active_seconds: dict[str, float] = {}
 
@@ -322,6 +326,12 @@ class TranscriptionWorker:
                     item.status = J.RUNNING
                     item.pid = existing.pid
                     self._store.save(item)
+                    self._events.append(
+                        "adopted",
+                        pid=existing.pid,
+                        file=Path(item.media_path).stem,
+                        log=item.log_path,
+                    )
                     self._emit(item, stage="Retomando transcripción en curso…", progress=0)
                     rc = self._monitor(
                         item, existing, owned=None, cohort=self._cohort(item)
@@ -400,6 +410,19 @@ class TranscriptionWorker:
             item.status = J.RUNNING if item.id == lead.id else J.PENDING
             self._store.save(item)
         self._current = lead
+        self._events.append(
+            "run_start",
+            pid=proc.pid,
+            files=[Path(i.media_path).stem for i in ready],
+            track=pistas[0],
+            model=lead.model,
+            beam=lead.beam_size,
+            no_diarize=bool(lead.no_diarize),
+            num_speakers=int(getattr(lead, "num_speakers", 0) or 0),
+            pc_impact=impact,
+            attempt=lead.attempts + 1,
+            log=lead.log_path,
+        )
         self._emit(lead, stage="Transcribiendo…", progress=0)
 
         rc = self._monitor(
@@ -449,6 +472,7 @@ class TranscriptionWorker:
             if fresh.status in (J.DONE, J.CANCELLED, J.ERROR):
                 continue
             if self._output_ready(fresh):
+                self._events.append("harvest", file=Path(fresh.media_path).stem)
                 self._settle(fresh, None)
 
     def _activate_live(
@@ -467,14 +491,29 @@ class TranscriptionWorker:
                 else:
                     prev.status = J.PENDING
                     self._store.save(prev)
+                    self._events.append(
+                        "requeued",
+                        file=Path(prev.media_path).stem,
+                        why="el CLI pasó de largo sin dejar transcripción",
+                    )
         fresh = self._reload(live)
         # Cancelado/fallido/listo NO revive por el hecho de que el CLI lo toque.
         if fresh.status in (J.CANCELLED, J.ERROR, J.DONE):
+            self._events.append(
+                "not_promoted",
+                file=Path(fresh.media_path).stem,
+                status=fresh.status,
+            )
             return None
         if fresh.status != J.RUNNING:
             fresh.status = J.RUNNING
             self._store.save(fresh)
         self._current = fresh
+        self._events.append(
+            "live",
+            file=Path(fresh.media_path).stem,
+            after=Path(previous.media_path).stem if previous is not None else "",
+        )
         return fresh
 
     def _next_in_cohort(self, cohort: list[TranscriptionJob]) -> Optional[TranscriptionJob]:
@@ -575,6 +614,12 @@ class TranscriptionWorker:
                     if debe_pausar and not suspended and vivo:
                         proc.suspend()
                         suspended = True
+                        self._events.append(
+                            "paused",
+                            file=Path(job.media_path).stem,
+                            why="empezó una grabación",
+                            active_seconds=round(tracker.active, 1),
+                        )
                         self._emit(
                             job,
                             stage="⏸ En pausa (grabando)…",
@@ -584,6 +629,11 @@ class TranscriptionWorker:
                     elif not debe_pausar and suspended:
                         proc.resume()
                         suspended = False
+                        self._events.append(
+                            "resumed",
+                            file=Path(job.media_path).stem,
+                            active_seconds=round(tracker.active, 1),
+                        )
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
                 _keep_awake(vivo and not suspended)
@@ -711,6 +761,16 @@ class TranscriptionWorker:
             job.error = ""
             job.pid = None
             self._store.save(job)
+            self._events.append(
+                "settled",
+                file=Path(job.media_path).stem,
+                status=J.DONE,
+                note=job.note or "",
+                attempts=job.attempts,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                result=str(resultado),
+            )
             self._learn_speed(job)
             self._cleanup_wav(job)
             self._emit(job, stage="Listo", progress=100)
@@ -726,6 +786,16 @@ class TranscriptionWorker:
             job.pid = None
             job.error = err_line or "poca memoria"
             self._store.save(job)
+            self._events.append(
+                "degraded",
+                file=Path(job.media_path).stem,
+                why="poca memoria",
+                note=job.note or "",
+                model=job.model,
+                pc_impact=job.pc_impact,
+                no_diarize=bool(job.no_diarize),
+                detail=(err_line or "")[:200],
+            )
             self._emit(
                 job,
                 stage=job.note or "Poca memoria; reintento más ligero…",
@@ -741,10 +811,23 @@ class TranscriptionWorker:
             job.note = "sin hablantes (la diarización falló)"
             job.status = J.PENDING
             self._store.save(job)
+            self._events.append(
+                "degraded",
+                file=Path(job.media_path).stem,
+                why="la diarización falló",
+                note=job.note,
+                attempts=job.attempts,
+            )
             self._emit(job, stage="Reintentando sin identificación de hablantes…")
         elif job.attempts < job.max_attempts:
             job.status = J.PENDING
             self._store.save(job)
+            self._events.append(
+                "retry",
+                file=Path(job.media_path).stem,
+                attempts=job.attempts,
+                detail=(err_line or self._why_no_result(seccion, rc))[:200],
+            )
             self._emit(job, stage=f"Falló; reintento {job.attempts + 1} en cola")
         else:
             self._fail(job, err_line or self._why_no_result(seccion, rc), retry=False)
@@ -779,7 +862,17 @@ class TranscriptionWorker:
         activo = self._active_seconds.pop(job.id, 0.0)
         audio = wav_duration_seconds(job.work_wav)
         if activo > 0 and audio > 0:
-            self._speed.record(key_for_job(job), audio, activo)
+            clave = key_for_job(job)
+            self._speed.record(clave, audio, activo)
+            self._events.append(
+                "speed",
+                file=Path(job.media_path).stem,
+                key=clave,
+                audio_seconds=round(audio, 1),
+                active_seconds=round(activo, 1),
+                factor=round(activo / audio, 3),
+                learned_factor=round(self._speed.factor_for(clave), 3),
+            )
 
     def _log_section(self, job: TranscriptionJob) -> str:
         """Parte del log que corresponde a ESTE archivo (vacía si nunca empezó)."""
@@ -799,6 +892,13 @@ class TranscriptionWorker:
             self._cleanup_wav(job)
         job.error = mensaje
         self._store.save(job)
+        self._events.append(
+            "failed",
+            file=Path(job.media_path).stem,
+            status=job.status,
+            attempts=job.attempts,
+            error=mensaje[:300],
+        )
         self._emit(job, stage="Error" if job.status == J.ERROR else "Reintento en cola")
 
     def _cleanup_wav(self, job: TranscriptionJob) -> None:
@@ -850,7 +950,15 @@ class TranscriptionWorker:
                 self._emit(job, stage="En cola")
         self._store.purge_orphan_work_dirs()
         # Histórico acotado (spec 023): sin aviso, es limpieza, no noticia.
-        self._store.prune_history()
+        podado = self._store.prune_history()
+        counts = self._store.queue_counts()
+        self._events.append(
+            "startup",
+            pending=counts.get("pending"),
+            running=counts.get("running"),
+            failed=counts.get("failed"),
+            pruned=podado,
+        )
 
     # --- utilidades -----------------------------------------------------------------
     def _emit(
@@ -870,6 +978,7 @@ class TranscriptionWorker:
         snap["eta_epoch"] = float(eta or 0.0)
         snap["batch_eta_epoch"] = float(batch_eta or 0.0)
         snap["eta_paused"] = bool(paused)
+        self._events.snapshot(snap)
         try:
             self._on_update(snap)
         except Exception:

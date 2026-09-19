@@ -123,6 +123,34 @@ El README cubre el uso; este archivo documenta lo que NO es obvio desde el códi
   Transcriptor, vía `ctranslate2.get_cuda_device_count`). La diarización usará GPU
   cuando se instale torch CUDA (el `pipeline.to(cuda)` ya está).
 
+## Revisar una cola que corrió sin nadie delante
+
+**Lo que la ventana muestra ya no se olvida** (spec 026): cada estado emitido
+(`_emit`) y cada decisión del worker (arranque del CLI con su lote, cambio de
+archivo en curso, cosecha, pausa/reanudación por grabación, degradación por OOM,
+reintento, fallo, desenlace, velocidad aprendida) se anotan en
+`%LOCALAPPDATA%\MeetingRecorder\transcripts\events.jsonl` (una línea JSON; rota
+a `.1` a los 8 MB). Es **solo diagnóstico**: nadie lo lee para decidir nada y
+todos sus errores se tragan — el rastro nunca puede arruinar una transcripción.
+
+```powershell
+.\.venv\Scripts\python.exe tools\night_report.py            # resumen por archivo
+.\.venv\Scripts\python.exe tools\night_report.py --hours 10 # solo la última noche
+.\.venv\Scripts\python.exe tools\night_report.py --raw      # + cada decisión
+```
+
+El informe da, por archivo: fases mostradas, desenlace, cuánto tardó, cuánto
+prometía la estimación y el factor aprendido. **No marca desvíos de estimación en
+archivos de menos de 2 minutos**: ahí manda el piso de 60 s del estimado y el
+porcentaje no significa nada (hallazgo F2 de la spec 025).
+
+Este rastro se pagó solo en su primer lote real: destapó un `PermissionError` al
+guardar un registro de la cola que marcaba el job como fallido. Dos hilos (Qt y
+worker) guardaban el mismo job con un temporal de nombre fijo. Arreglado en la
+spec 027: temporal por proceso+hilo, reintento corto al guardar Y al leer, y
+"no existe" se responde al instante (reintentarlo haría pasar por ausente un
+registro ocupado, que es como se cuela un duplicado en la cola).
+
 ## Verificación rápida
 
 ```powershell

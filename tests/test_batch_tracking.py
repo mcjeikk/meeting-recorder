@@ -19,6 +19,7 @@ from app.transcription.cli_progress import (
     section_ended_in_diarization,
 )
 from app.transcription.eta import ProgressTracker
+from app.transcription.event_log import EventLog, read_trail
 from app.transcription.jobs import (
     CANCELLED,
     DONE,
@@ -164,6 +165,56 @@ class TestBatchTracking(unittest.TestCase):
         posteriores = [s for s in self.emitted[listo + 1 :] if s["status"] == RUNNING]
         self.assertTrue(posteriores, "tras terminar 'uno' debe seguir avisando del siguiente")
         self.assertNotIn("uno", [Path(s["media_path"]).stem for s in posteriores])
+
+    def test_the_run_leaves_a_readable_trail(self) -> None:
+        # Spec 026: lo que se mostró y lo que se decidió quedan anotados para
+        # poder revisar una cola que corrió sin nadie delante.
+        a = self._job("uno", RUNNING)
+        b = self._job("dos", PENDING)
+        driver = _LogDriver(
+            self.log,
+            [
+                self._append("> Procesando: uno.wav\n    transcribiendo... 50%\n"),
+                self._append("  - Identificando hablantes (diarizacion)...\n"),
+                self._finish("uno"),
+                self._append("  OK en 90s  ->  x\n> Procesando: dos.wav\n"),
+                self._append("    transcribiendo... 20%\n"),
+            ],
+        )
+        self.worker._monitor(a, _FakeProc(), owned=driver, cohort=[a, b])
+
+        rastro = read_trail(self.store.base / "events.jsonl")
+        clases = [e["kind"] for e in rastro]
+        self.assertIn("ui", clases)
+        self.assertIn("harvest", clases)   # 'uno' cosechado en cuanto hubo resultado
+        self.assertIn("settled", clases)
+        self.assertIn("live", clases)      # y 'dos' tomó el relevo
+        # El rastro sabe decir qué archivo estaba en curso y con qué fase.
+        ui_dos = [e for e in rastro if e["kind"] == "ui" and e["file"] == "dos"]
+        self.assertTrue(ui_dos)
+        self.assertEqual((ui_dos[-1]["batch_pos"], ui_dos[-1]["batch_total"]), (2, 2))
+        fases = {e["stage"] for e in rastro if e["kind"] == "ui" and e.get("stage")}
+        self.assertTrue(any("hablantes" in f for f in fases))
+        # Y el desenlace de 'uno' con su hora, que es lo que permite medir después.
+        listo = next(e for e in rastro if e["kind"] == "settled" and e["file"] == "uno")
+        self.assertEqual(listo["status"], DONE)
+        self.assertTrue(listo["finished_at"])
+
+    def test_a_broken_trail_does_not_disturb_the_queue(self) -> None:
+        # El rastro es un lujo: si no se puede escribir, la cola sigue igual.
+        a = self._job("uno", RUNNING)
+        self.worker._events = EventLog(self.store.base)  # una CARPETA: escribir falla
+        driver = _LogDriver(
+            self.log,
+            [
+                self._append("> Procesando: uno.wav\n    transcribiendo... 50%\n"),
+                self._finish("uno"),
+            ],
+        )
+        rc = self.worker._monitor(a, _FakeProc(), owned=driver, cohort=[a])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._status(a), DONE)
+        self.assertTrue([s for s in self.emitted if s["status"] == RUNNING])
 
     def test_batch_estimate_carries_one_model_load_not_one_per_file(self) -> None:
         # El CLI carga los modelos una vez por ejecución: los pendientes del
