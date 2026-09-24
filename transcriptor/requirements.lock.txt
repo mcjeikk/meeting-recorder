@@ -1,4 +1,5 @@
 ﻿# Dependencias congeladas el 2026-06-10 (entorno validado: Python 3.11.9, CPU)
+# pyannote-audio 4.0.7 (2026-09-10); torch/torchaudio siguen +cpu.
 # IMPORTANTE: torch/torchaudio son builds +cpu. Para reinstalar desde cero:
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #   pip install -r requirements.lock.txt  (torch +cpu no existe en PyPI; instalarlo ANTES con el indice de arriba)
@@ -67,7 +68,7 @@ pillow==12.2.0
 primePy==1.3
 propcache==0.5.2
 protobuf==6.33.6
-pyannote-audio==4.0.4
+pyannote-audio==4.0.7
 pyannote-core==6.0.1
 pyannote-database==6.1.1
 pyannote-metrics==4.1

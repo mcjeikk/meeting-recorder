@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import wave
 from pathlib import Path
 
 # Extensiones de audio/vídeo que intentaremos procesar.
@@ -24,6 +25,35 @@ def asegurar_ffmpeg() -> None:
             "Instálalo con:  winget install Gyan.FFmpeg   (o:  choco install ffmpeg)\n"
             "y vuelve a abrir la terminal."
         )
+
+
+def es_wav16k_mono_pcm(path: Path | str) -> bool:
+    """True si ya es WAV PCM 16-bit mono 16 kHz (el formato de trabajo del Grabador)."""
+    origen = Path(path)
+    if origen.suffix.lower() != ".wav":
+        return False
+    try:
+        with wave.open(str(origen), "rb") as wf:
+            return (
+                wf.getnchannels() == 1
+                and wf.getframerate() == 16000
+                and wf.getsampwidth() == 2
+                and (wf.getcomptype() or "NONE").upper() in ("NONE", "NOT COMPRESSED")
+            )
+    except (OSError, wave.Error):
+        return False
+
+
+def preparar_wav16k(origen: Path, destino_dir: Path) -> tuple[Path, bool]:
+    """Devuelve (wav, reutilizado).
+
+    Si el origen ya es WAV 16 kHz mono PCM, no llama a ffmpeg (el Grabador ya
+    extrajo así). Si no, convierte a `destino_dir`.
+    """
+    origen = Path(origen)
+    if es_wav16k_mono_pcm(origen):
+        return origen, True
+    return convertir_a_wav16k(origen, destino_dir), False
 
 
 def convertir_a_wav16k(origen: Path, destino_dir: Path) -> Path:

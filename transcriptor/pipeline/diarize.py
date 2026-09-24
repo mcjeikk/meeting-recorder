@@ -15,10 +15,15 @@ warnings.filterwarnings("ignore", message=r"(?s).*torchcodec.*")
 warnings.filterwarnings("ignore", message=r".*degrees of freedom.*")
 
 _MODELO = "pyannote/speaker-diarization-community-1"
+_pipeline_cache: dict[str, object] = {}
 
 
 def cargar_pipeline(hf_token: str):
     """Carga el pipeline de diarización (en GPU si torch la tiene disponible)."""
+    token = hf_token or ""
+    cached = _pipeline_cache.get(token)
+    if cached is not None:
+        return cached
     from pyannote.audio import Pipeline
     try:
         pipeline = Pipeline.from_pretrained(_MODELO, token=hf_token)
@@ -32,6 +37,7 @@ def cargar_pipeline(hf_token: str):
             pipeline.to(torch.device("cuda"))
         except Exception:
             pass  # cualquier problema con la GPU → se sigue en CPU
+    _pipeline_cache[token] = pipeline
     return pipeline
 
 
@@ -103,9 +109,22 @@ def diarizar(
     return _extraer_turnos(salida)
 
 
+def _anotacion_para_asr(salida):
+    """community-1: exclusive (un hablante por instante) alinea mejor con Whisper.
+
+    La anotación regular permite solapes; al fusionar por tiempo eso mete el
+    hablante equivocado en frases en español. Si exclusive no existe (pyannote
+    3.x o pipeline sin el campo), se usa speaker_diarization / la Annotation.
+    """
+    exclusive = getattr(salida, "exclusive_speaker_diarization", None)
+    if exclusive is not None:
+        return exclusive
+    return getattr(salida, "speaker_diarization", salida)
+
+
 def _extraer_turnos(salida) -> list[dict]:
-    # pyannote 4.x expone .speaker_diarization; 3.x devuelve directamente la Annotation.
-    diar = getattr(salida, "speaker_diarization", salida)
+    # pyannote 4.x: DiarizeOutput; 3.x devuelve la Annotation directa.
+    diar = _anotacion_para_asr(salida)
     turnos: list[dict] = []
     if hasattr(diar, "itertracks"):
         for turn, _, speaker in diar.itertracks(yield_label=True):

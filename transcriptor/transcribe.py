@@ -63,7 +63,11 @@ def parsear_args():
     p = argparse.ArgumentParser(
         description="Transcribe reuniones e identifica hablantes (local, CPU).",
     )
-    p.add_argument("entrada", help="Archivo de audio o carpeta (con --batch).")
+    p.add_argument(
+        "entrada",
+        nargs="+",
+        help="Archivo(s) de audio/vídeo, o una carpeta (con --batch).",
+    )
     p.add_argument("--batch", action="store_true", help="Procesar todos los audios de una carpeta.")
     p.add_argument("--model", dest="modelo", help="Modelo Whisper (large-v3-turbo, large-v3, medium, small).")
     p.add_argument("--language", dest="idioma", help="Idioma ISO (es, en, ...) o 'auto'.")
@@ -80,6 +84,35 @@ def parsear_args():
     p.add_argument("--formats", dest="formatos", help="Formatos de salida separados por coma (txt,srt,json).")
     p.add_argument("--output", dest="carpeta_salida", help="Carpeta de salida.")
     return p.parse_args()
+
+
+def limitar_hilos_cpu(n: int) -> None:
+    """Aplica --threads también a OpenMP/PyTorch (la diarización los ignoraba)."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return
+    if n <= 0:
+        return
+    for key in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "TORCH_NUM_THREADS",
+    ):
+        os.environ[key] = str(n)
+    try:
+        import torch
+
+        torch.set_num_threads(n)
+        if hasattr(torch, "set_num_interop_threads"):
+            try:
+                torch.set_num_interop_threads(max(1, min(n, 2)))
+            except RuntimeError:
+                pass
+    except Exception:
+        pass
 
 
 def opciones_efectivas(args, cfg: dict) -> dict:
@@ -107,8 +140,9 @@ def opciones_efectivas(args, cfg: dict) -> dict:
     }
 
 
-def listar_entradas(entrada: Path, batch: bool) -> list[Path]:
-    if entrada.is_dir() or batch:
+def listar_entradas(entradas: list[Path], batch: bool) -> list[Path]:
+    if len(entradas) == 1 and (entradas[0].is_dir() or batch):
+        entrada = entradas[0]
         if not entrada.is_dir():
             raise SystemExit(f"No es una carpeta: {entrada}")
         archivos = sorted(
@@ -117,9 +151,14 @@ def listar_entradas(entrada: Path, batch: bool) -> list[Path]:
         if not archivos:
             raise SystemExit(f"No se encontraron audios en {entrada}")
         return archivos
-    if not entrada.exists():
-        raise SystemExit(f"No existe el archivo: {entrada}")
-    return [entrada]
+    archivos: list[Path] = []
+    for entrada in entradas:
+        if not entrada.exists():
+            raise SystemExit(f"No existe el archivo: {entrada}")
+        if entrada.is_dir():
+            raise SystemExit("Para una carpeta usa --batch.")
+        archivos.append(entrada)
+    return archivos
 
 
 def _transcribir_con_progreso(wav: Path, o: dict) -> dict:
@@ -163,8 +202,11 @@ def procesar_archivo(archivo: Path, o: dict, hf_token: str | None) -> Path:
     turnos: list[dict] = []
 
     with tempfile.TemporaryDirectory() as tmp:
-        info("  - Convirtiendo audio a WAV 16 kHz...")
-        wav = audio_mod.convertir_a_wav16k(archivo, Path(tmp))
+        wav, reutilizado = audio_mod.preparar_wav16k(archivo, Path(tmp))
+        if reutilizado:
+            info("  - Audio ya en WAV 16 kHz; se omite reconversión.")
+        else:
+            info("  - Convirtiendo audio a WAV 16 kHz...")
 
         info(f"  - Transcribiendo (modelo {o['modelo']}, idioma {o['idioma']})...")
         asr = _transcribir_con_progreso(wav, o)
@@ -225,6 +267,7 @@ def main():
     args = parsear_args()
     cfg = cargar_config()
     o = opciones_efectivas(args, cfg)
+    limitar_hilos_cpu(o.get("cpu_threads") or 0)
 
     load_dotenv(RAIZ / ".env")
     load_dotenv()  # también un .env del directorio actual, si existe
@@ -242,7 +285,7 @@ def main():
     if not audio_mod.ffmpeg_disponible():
         info("[!] No se encontro ffmpeg en el PATH. Instalalo con: winget install Gyan.FFmpeg")
 
-    entrada = Path(args.entrada)
+    entrada = [Path(p) for p in args.entrada]
     archivos = listar_entradas(entrada, args.batch)
     info(f"Archivos a procesar: {len(archivos)}")
 

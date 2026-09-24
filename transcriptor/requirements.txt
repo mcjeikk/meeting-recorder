@@ -6,7 +6,7 @@
 faster-whisper>=1.1.0
 
 # Diarización de hablantes (pyannote.audio 4.x + modelo community-1)
-pyannote.audio>=4.0.0
+pyannote.audio>=4.0.7
 
 # Utilidades
 PyYAML>=6.0
