@@ -34,8 +34,8 @@
 
 - [x] **T013** Create `transcriptor\.venv` from `requirements.lock.txt` (torch +cpu first), copy the `.env`, pin the environment against Files On-Demand.
   *Evidence*: torch exit 0, lock exit 0 (9 min); `.env` with a real token, ignored; `attrib` shows `P`.
-- [ ] **T014** Point `transcriptor_dir` to the bundled folder; `smoke_test.py` and `verify_transcription.py --quick` with speakers. (SC-004)
-  *Evidence so far*: with an empty configuration the app resolves to `Recorder\transcriptor`, and `verify_transcription.py --quick` on the 2026-09-23 recording returned OK in 130 s with 2 speakers. Still to do: switch the saved path, with the app closed (it saves `config.json` on almost every UI change).
+- [x] **T014** Point `transcriptor_dir` to the bundled folder; `smoke_test.py` and `verify_transcription.py --quick` with speakers. (SC-004)
+  *Evidence*: with the Recorder closed (it saves `config.json` on almost every UI change), `transcriptor_dir` was switched to `Recorder\transcriptor` (backup `config.json.bak-029`). `smoke_test.py` reports that folder and the token; `verify_transcription.py --quick` on the 2026-09-23 recording, using the real configuration: `OK en 102s`, 2 speakers.
 
 ## Phase 6 — Acceptance
 
