@@ -97,46 +97,68 @@ def apply_selected_output_dir(cfg: "AppConfig", folder: str | Path) -> Path:
     return resolved
 
 
-# Nombres con los que el Transcriptor aparece junto al Recorder: el de un
-# `git clone` tal cual (meeting-transcriber) y el de la carpeta de desarrollo.
-_TRANSCRIPTOR_FOLDER_NAMES = ("meeting-transcriber", "Transcriptor")
-
-
-def _looks_like_transcriptor(path: Path) -> bool:
+def _has_cli(path: Path) -> bool:
     return (path / "transcribe.py").is_file()
+
+
+def _is_complete(path: Path) -> bool:
+    """CLI **y** su entorno: lo único que se puede lanzar de verdad.
+
+    La carpeta `transcriptor/` viene en todo clon del repo, tenga o no su
+    `.venv`; elegirla solo por tener `transcribe.py` dejaría sin transcripción
+    una instalación que funcionaba en cuanto el repo se actualiza (spec 029).
+    """
+    return _has_cli(path) and (path / ".venv" / "Scripts" / "python.exe").is_file()
+
+
+def _transcriptor_candidates(root: Path) -> tuple:
+    """Por orden: la del propio repo; luego las hermanas de instalaciones previas."""
+    return (
+        root / "transcriptor",                    # dentro del repo (spec 029)
+        root.parent / "meeting-transcriber",      # clon aparte (spec 028)
+        root.parent / "Transcriptor",             # carpeta de desarrollo
+        root.parent.parent / "Transcriptor",      # ubicación antigua
+    )
 
 
 def default_transcriptor_dir(recorder_root: Optional[Path] = None) -> str:
     """Mejor estimación de la carpeta del proyecto Transcriptor.
 
-    Se busca como carpeta hermana del Recorder, con el nombre que deja `git
-    clone` o el de la carpeta de desarrollo; también en la ubicación antigua
-    (un nivel más arriba). Si no está, cadena vacía y el usuario puede fijar la
-    ruta en config.json.
+    Gana el primer candidato completo (CLI + entorno). Si ninguno lo está, el
+    primero que al menos tenga el CLI, para que el aviso nombre dónde falta
+    instalar el entorno. Si no hay ninguno, cadena vacía.
     """
     root = Path(recorder_root) if recorder_root else Path(__file__).resolve().parents[2]
-    for base in (root.parent, root.parent.parent):
-        for nombre in _TRANSCRIPTOR_FOLDER_NAMES:
-            candidato = base / nombre
-            if _looks_like_transcriptor(candidato):
-                return str(candidato)
+    candidatos = _transcriptor_candidates(root)
+    for candidato in candidatos:
+        if _is_complete(candidato):
+            return str(candidato)
+    for candidato in candidatos:
+        if _has_cli(candidato):
+            return str(candidato)
     return ""
 
 
 def resolve_transcriptor_dir(
     configured: str, recorder_root: Optional[Path] = None
 ) -> str:
-    """La ruta guardada si sigue siendo un Transcriptor; si no, autodetectar.
+    """La ruta guardada si se puede lanzar; si no, la mejor que se encuentre.
 
     Quien abre la app antes de instalar el Transcriptor deja la ruta vacía en
     config.json, y quien mueve la carpeta la deja obsoleta: en ambos casos
-    buscarlo de nuevo en vez de lanzar el CLI con una ruta que no sirve. Si no
-    aparece en ningún sitio, se conserva lo guardado para que el error la nombre.
+    buscarlo de nuevo en vez de lanzar el CLI con una ruta que no sirve. Una ruta
+    guardada incompleta cede ante un candidato completo; si no hay ninguno, se
+    conserva lo guardado para que el error la nombre.
     """
     texto = str(configured or "").strip()
-    if texto and _looks_like_transcriptor(Path(texto)):
+    if texto and _is_complete(Path(texto)):
         return texto
-    return default_transcriptor_dir(recorder_root) or texto
+    encontrado = default_transcriptor_dir(recorder_root)
+    if encontrado and _is_complete(Path(encontrado)):
+        return encontrado
+    if texto and _has_cli(Path(texto)):
+        return texto
+    return encontrado or texto
 
 
 @dataclass
