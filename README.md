@@ -6,7 +6,7 @@ Aplicación de escritorio para **grabar reuniones** (Teams, navegadores y cualqu
 - 🔊 **Audio del sistema** (lo que escuchas por los parlantes)
 - 🎤 **Micrófono**
 
-El resultado es un archivo **MP4** con **pistas de audio separadas** (sistema y micrófono) más una **pista mezclada** que se reproduce normal en cualquier reproductor. Y si activas la casilla **"Transcribir al terminar"** *(opcional)*, la app genera automáticamente la **transcripción con identificación de hablantes** usando el proyecto **Transcriptor** —un proyecto **independiente que instalas aparte** (100 % local; el audio nunca sale de tu equipo). Sin Transcriptor instalado, la grabación funciona igual: solo no se genera la transcripción.
+El resultado es un archivo **MP4** con **pistas de audio separadas** (sistema y micrófono) más una **pista mezclada** que se reproduce normal en cualquier reproductor. Y si activas la casilla **"Transcribir al terminar"** *(opcional)*, la app genera automáticamente la **transcripción con identificación de hablantes** con el motor que viene en la carpeta **`transcriptor\`** (100 % local; el audio nunca sale de tu equipo). Tiene su propio entorno y se instala aparte (paso B); sin él, la grabación funciona igual: solo no se genera la transcripción.
 
 > **Estado actual:** Windows con grabación + transcripción automática funcionando. macOS y Linux están planificados (ver `Roadmap`).
 
@@ -27,21 +27,26 @@ El resultado es un archivo **MP4** con **pistas de audio separadas** (sistema y 
 
 ## 🚀 Instalación (paso a paso)
 
-Son dos proyectos que se instalan **lado a lado en la misma carpeta**: el Grabador y,
-si quieres transcribir, el Transcriptor. La app encuentra al segundo sola.
+Un solo repositorio con dos partes, **cada una con su propio entorno de Python**: la
+app que graba (raíz) y el motor de transcripción (`transcriptor\`). Van separadas a
+propósito: el motor usa PyTorch y pyannote, que son pesados y cambian de API entre
+versiones, y así la app no depende de ellos. La app lo encuentra sola.
 
 ```
-Proyectos\                 ← cualquier carpeta tuya
-├─ meeting-recorder\       ← A. el Grabador
-└─ meeting-transcriber\    ← B. el Transcriptor (opcional)
+meeting-recorder\
+├─ .venv\                  ← A. entorno de la app (grabar)
+├─ app\ …
+└─ transcriptor\
+   ├─ .venv\               ← B. entorno del motor (transcribir, opcional)
+   └─ .env                 ← tu token de Hugging Face
 ```
 
 > Si PowerShell bloquea la activación de un entorno (`Activate.ps1`), ejecuta una vez:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
-### A. El Grabador (grabar)
+### A. La app (grabar)
 
-Abre **PowerShell** en la carpeta donde quieras tener los proyectos y ejecuta:
+Abre **PowerShell** en la carpeta donde quieras tener el proyecto y ejecuta:
 
 ```powershell
 git clone https://github.com/mcjeikk/meeting-recorder.git
@@ -50,18 +55,17 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python smoke_test.py          # (opcional) comprueba el entorno
-cd ..
+deactivate
 ```
 
 Con esto ya puedes **grabar** (ver *Abrir la app*). Si no vas a transcribir, has terminado.
 
-### B. El Transcriptor (transcribir, con hablantes)
+### B. El motor de transcripción (transcribir, con hablantes)
 
-Desde **la misma carpeta** (la que contiene `meeting-recorder`):
+Desde la carpeta `meeting-recorder`:
 
 ```powershell
-git clone https://github.com/mcjeikk/meeting-transcriber.git
-cd meeting-transcriber
+cd transcriptor
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 # PyTorch en versión CPU, ANTES que el resto (desde el índice de PyTorch, no de PyPI):
@@ -77,13 +81,15 @@ cd ..
 1. Crea un token de lectura en <https://huggingface.co/settings/tokens>.
 2. Con esa misma cuenta, **acepta las condiciones** (gratis) de
    <https://huggingface.co/pyannote/speaker-diarization-community-1>.
-3. Abre `meeting-transcriber\.env` y pega el token: `HUGGINGFACE_TOKEN=hf_...`
+3. Abre `transcriptor\.env` y pega el token: `HUGGINGFACE_TOKEN=hf_...`
 
 ### C. Comprobar que transcribe
 
+Desde la carpeta `meeting-recorder`:
+
 ```powershell
-cd meeting-recorder
 .\.venv\Scripts\Activate.ps1
+python smoke_test.py          # dice si encontró el motor y si hay token
 python verify_transcription.py --quick "C:\ruta\cualquier_audio_o_video.mp4"
 ```
 
@@ -248,18 +254,17 @@ transcripciones (de reuniones y de archivos importados) quedan en la
 
 ### Requisitos y configuración
 
-> ⚠️ **La transcripción es opcional y depende de un proyecto aparte.** El **Transcriptor**
-> (faster-whisper + pyannote) **no viene incluido en este repositorio**; se instala por
-> separado desde **<https://github.com/mcjeikk/meeting-transcriber>** (pasos B y C de la
-> *Instalación*). Si no lo tienes, la grabación funciona igual: solo no se generará la
-> transcripción.
+> ⚠️ **La transcripción es opcional.** El motor (faster-whisper + pyannote) viene en la
+> carpeta **`transcriptor\`** de este repositorio, pero con **su propio entorno**, que se
+> instala aparte (pasos B y C de la *Instalación*). Sin él, la grabación funciona igual:
+> solo no se generará la transcripción.
 
-- El proyecto **Transcriptor** debe estar instalado con su propio `.venv` en una carpeta
-  hermana llamada `meeting-transcriber` (la que crea `git clone`) o `Transcriptor`. Se
-  autodetecta al arrancar y antes de cada trabajo, así que da igual si lo instalas
-  después de haber abierto la app. Para otra ubicación, fija `transcriptor_dir` en
-  `%APPDATA%\MeetingRecorder\config.json` (junto a `transcription_language` y
-  `pause_transcription_while_recording`).
+- La app usa el motor de `transcriptor\` en cuanto tiene su `.venv` instalado. Se
+  comprueba al arrancar y antes de cada trabajo, así que da igual si lo instalas después
+  de haber abierto la app. Instalaciones antiguas con el Transcriptor en una carpeta
+  hermana (`meeting-transcriber` o `Transcriptor`) siguen funcionando. Para otra
+  ubicación, fija `transcriptor_dir` en `%APPDATA%\MeetingRecorder\config.json` (junto a
+  `transcription_language` y `pause_transcription_while_recording`).
 - La cola guarda historial **reciente**: los trabajos terminados se olvidan tras 30 días
   (o cuando pasan de 200), junto con sus logs. Tus transcripciones no se tocan nunca, y
   si vuelves a añadir un archivo ya transcrito la app lo reconoce mirando la carpeta de
@@ -297,7 +302,9 @@ python verify_transcription.py "ruta.mp4" --force     # transcribir una concreta
 
 - **Fase 1 ✅:** MVP Windows — video + audio del sistema + micrófono → MP4.
 - **Fase 2 ✅ (jun-2026):** Transcripción automática con el proyecto **Transcriptor**
-  (subproceso + cola persistente; ver sección *Transcripción automática*).
+  (subproceso + cola persistente; ver sección *Transcripción automática*). Desde
+  sep-2026 vive en este mismo repositorio (`transcriptor\`); el repo
+  `meeting-transcriber` quedó archivado.
 - **Fase 3:** **macOS** (ScreenCaptureKit).
 - **Fase 4:** **Linux** (PipeWire + xdg-desktop-portal).
 - **Fase 5:** Empaquetado e instaladores firmados.
@@ -320,6 +327,17 @@ app/
 
 verify_transcription.py  # prueba de humo de la integración (--quick)
 verify_pipeline.py       # prueba end-to-end de la grabación
+run_all_tests.ps1        # pruebas de las dos partes, cada una con su entorno
+
+transcriptor/            # motor de transcripción (su propio .venv; ver su README)
+├─ transcribe.py         #   CLI: también se puede usar solo, sin la app
+└─ pipeline/             #   audio, ASR (faster-whisper), hablantes (pyannote), salida
+```
+
+### 🧪 Pruebas
+
+```powershell
+.\run_all_tests.ps1      # las dos partes; la del motor se omite si su .venv no está
 ```
 
 ---

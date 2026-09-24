@@ -1,18 +1,27 @@
 # Contexto para sesiones de desarrollo (Claude Code)
 
 App de escritorio Windows (PySide6) que graba reuniones (video + audio del sistema
-+ micrófono → MP4 multipista) y las transcribe automáticamente con el proyecto
-hermano **Transcriptor** (`..\Transcriptor`, faster-whisper + pyannote, venv propio;
-movido de `Proyectos\Transcriptor` a `Apps\Transcriptor` el jun-11-2026 — la
-autodetección en `config.py` prueba ambas ubicaciones).
++ micrófono → MP4 multipista) y las transcribe automáticamente con el
+**Transcriptor** (faster-whisper + pyannote), que desde la spec 029 (sep-2026) vive
+en **`transcriptor\` de este mismo repo**, con su historial y **su propio `.venv`**.
+Antes era el repo aparte `meeting-transcriber` (archivado) en `..\Transcriptor`; la
+autodetección de `config.py` sigue probando esas ubicaciones como respaldo.
 El README cubre el uso; este archivo documenta lo que NO es obvio desde el código.
 
 ## Decisiones de arquitectura (no revertir sin razón)
 
 - **Transcripción = subproceso CLI + cola persistente** (no librería, no venv
-  fusionado). Cada proyecto conserva su `.venv` (ambos Python 3.11.9). Se evaluaron
-  y descartaron: venv unificado (acopla torch/pyannote a la app; pyannote ya rompió
-  API 3.x→4.x) y worker con Tarea Programada (sobre-ingeniería para un usuario).
+ fusionado). Cada parte conserva su `.venv` (ambos Python 3.11.9). Se evaluaron
+ y descartaron: venv unificado (acopla torch/pyannote a la app; pyannote ya rompió
+ API 3.x→4.x) y worker con Tarea Programada (sobre-ingeniería para un usuario).
+ **Un solo repo NO es un solo entorno** (spec 029): se unificó el repo porque el
+ contrato entre las dos partes (log parseado, `TRANSCRIPTOR_PLAIN`, varios WAV por
+ argv, WAV preparado sin reconvertir, mapa de hablantes) se rompió en silencio con
+ dos repos (spec 028). La app sigue sin importar nada de `transcriptor\`.
+- **Detección = candidato COMPLETO** (`transcribe.py` + `.venv\Scripts\python.exe`):
+ `transcriptor\` existe en todo clon, con o sin entorno; elegirlo solo por el CLI
+ dejaría sin transcripción una instalación sana al actualizar el repo. Orden:
+ `transcriptor\`, luego `..\meeting-transcriber`, `..\Transcriptor`, `..\..\Transcriptor`.
 - **stdout del subproceso va a un ARCHIVO de log, nunca a un pipe**: por eso el
   hijo sobrevive al cierre de la app. El éxito se decide por existencia de
   `transcripcion.txt` (en un CLI con varios WAV el exit code es global); el
@@ -187,8 +196,17 @@ archivo se transcribió** — sin registro, `classify_import` lo pregunta al dis
 (`transcript_exists`: `transcripcion.txt` en el destino). Si alguna vez se poda
 también por otro criterio, esa comprobación es la que evita repetir horas de CPU.
 
-## Transcriptor (proyecto hermano)
+## Transcriptor (`transcriptor\`)
 
+- Pruebas: `.\run_all_tests.ps1` corre las dos suites, cada una con su intérprete
+ (la del motor, desde su carpeta: `python -m unittest discover -s tests`; con
+ `-t .` desde la raíz falla por "not importable").
+- Su historial se trajo con `git filter-branch --index-filter` (todo bajo
+ `transcriptor/`) + merge `--allow-unrelated-histories`: `git log --follow
+ transcriptor\pipeline\asr.py` llega hasta su primer commit.
+- Un `.venv` no se puede mover (los lanzadores llevan la ruta embebida): al pasar
+ a `transcriptor\` se crea uno nuevo desde el lock; el `.env` (token HF) se copia
+ a mano — está ignorado y NUNCA se versiona.
 - `requirements.lock.txt` = entorno congelado validado (torch **+cpu**: reinstalar
   SIEMPRE con `--index-url https://download.pytorch.org/whl/cpu` ANTES del resto).
 - Cambios hechos desde aquí: `device: auto` (asr.py + diarize.py + config.yaml),

@@ -1,5 +1,10 @@
 # 🎙️ Transcriptor de Reuniones (local, CPU)
 
+> Es el motor de transcripción del [Grabador de Reuniones](../README.md) y vive en su
+> carpeta `transcriptor\` (hasta sep-2026 era el repo aparte `meeting-transcriber`, hoy
+> archivado). Tiene **su propio entorno de Python** y también se puede usar solo, desde
+> la línea de comandos, como se describe aquí.
+
 Herramienta de línea de comandos para **transcribir grabaciones de reuniones** e
 **identificar a los hablantes** (diarización). Funciona **100 % en local sobre CPU**
 (sin GPU): el audio nunca sale de tu equipo.
@@ -21,15 +26,9 @@ Herramienta de línea de comandos para **transcribir grabaciones de reuniones** 
   Grabador le entrega el audio ya convertido.
 - Una **cuenta de Hugging Face** con un token gratuito (solo para identificar hablantes).
 
-> **¿Lo instalas para el Grabador de Reuniones?** Clónalo **en la misma carpeta que
-> contiene `meeting-recorder`**, para que queden lado a lado; el Grabador lo encuentra
-> solo:
->
-> ```
-> Proyectos\
-> ├─ meeting-recorder\
-> └─ meeting-transcriber\
-> ```
+> **¿Lo instalas para el Grabador de Reuniones?** Sigue el paso B de su
+> [README](../README.md#-instalación-paso-a-paso): es este mismo, hecho desde esta
+> carpeta. El Grabador lo encuentra solo en cuanto su `.venv` existe.
 
 ---
 
@@ -39,9 +38,9 @@ Necesitas **[git](https://git-scm.com/download/win)** y **Python 3.11** (no uses
 PyTorch/pyannote aún no traen paquetes para versiones muy nuevas). Abre **PowerShell** y ejecuta:
 
 ```powershell
-# 1) Clonar el repositorio
-git clone https://github.com/mcjeikk/meeting-transcriber.git
-cd meeting-transcriber
+# 1) Clonar el repositorio y entrar en la carpeta del motor
+git clone https://github.com/mcjeikk/meeting-recorder.git
+cd meeting-recorder\transcriptor
 
 # 2) Crear y activar un entorno virtual CON PYTHON 3.11
 #    (usa 'py -3.11'; el 'python' por defecto del sistema puede ser otra versión incompatible)
@@ -232,7 +231,7 @@ whisperx "reunion.m4a" --compute_type int8 --device cpu --language es --diarize 
 ## 9. Estructura del proyecto
 
 ```
-Transcriptor/
+meeting-recorder/transcriptor/
 ├─ transcribe.py        # CLI principal
 ├─ pipeline/
 │  ├─ audio.py          # conversión con ffmpeg -> WAV 16 kHz
