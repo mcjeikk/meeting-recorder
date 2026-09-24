@@ -6,7 +6,8 @@ Herramienta de línea de comandos para **transcribir grabaciones de reuniones** 
 
 - Acepta **m4a, mp3, wav, flac, ogg, opus, m4b, mp4** y más (los convierte con ffmpeg).
 - Transcribe en **español** con Whisper (`large-v3-turbo` por defecto, vía faster-whisper).
-- Etiqueta **quién habla y cuándo** con pyannote (modelo `community-1`).
+- Etiqueta **quién habla y cuándo** con pyannote (`community-1`, modo
+  **exclusive**: un hablante por instante, mejor alineado con Whisper).
 - Genera **`.txt` legible**, **`.srt`** (subtítulos) y **`.json`** (datos estructurados).
 - Pensada para audios **largos** y para ejecutarse a mano o desde Claude Code.
 
@@ -15,8 +16,20 @@ Herramienta de línea de comandos para **transcribir grabaciones de reuniones** 
 ## 1. Requisitos
 
 - **Windows** con **Python 3.11** (importante: versiones muy nuevas como 3.14 todavía no tienen paquetes compatibles de PyTorch/pyannote).
-- **ffmpeg** instalado.
+- **ffmpeg** instalado, **solo si lo usas a mano** con m4a/mp3/mp4… Si lo usas desde el
+  [Grabador de Reuniones](https://github.com/mcjeikk/meeting-recorder), no hace falta: el
+  Grabador le entrega el audio ya convertido.
 - Una **cuenta de Hugging Face** con un token gratuito (solo para identificar hablantes).
+
+> **¿Lo instalas para el Grabador de Reuniones?** Clónalo **en la misma carpeta que
+> contiene `meeting-recorder`**, para que queden lado a lado; el Grabador lo encuentra
+> solo:
+>
+> ```
+> Proyectos\
+> ├─ meeting-recorder\
+> └─ meeting-transcriber\
+> ```
 
 ---
 
@@ -35,16 +48,22 @@ cd meeting-transcriber
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# 3) Instalar ffmpeg (si no lo tienes)
+# 3) Instalar ffmpeg (solo para uso manual con m4a/mp3/mp4; el Grabador no lo necesita)
 winget install Gyan.FFmpeg
 #   (cierra y vuelve a abrir PowerShell para que ffmpeg quede en el PATH)
 
 # 4) Instalar PyTorch en versión CPU (IMPORTANTE: antes que el resto de dependencias)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # 5) Instalar el resto de dependencias
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+
+# 6) (Opcional) Comprobar la instalación
+python -m unittest discover -s tests
 ```
+
+> Si prefieres reproducir **exactamente** el entorno validado, en el paso 5 usa
+> `requirements.lock.txt` en lugar de `requirements.txt` (sigue haciendo falta el paso 4).
 
 ### Token de Hugging Face (para identificar hablantes)
 
@@ -69,6 +88,9 @@ La transcripción funciona sin token, pero **para diarizar (saber quién habla)*
 ```powershell
 # Transcribir un archivo (español + hablantes, por defecto)
 python transcribe.py "C:\ruta\reunion.m4a"
+
+# Varios archivos en una sola ejecución (los modelos se cargan una vez)
+python transcribe.py "reunion1.m4a" "reunion2.mp3" "reunion3.wav"
 
 # Procesar TODOS los audios de una carpeta
 python transcribe.py "C:\ruta\carpeta_audios" --batch
@@ -142,14 +164,17 @@ que tocar nada cuando el equipo gane una GPU. Se puede forzar con `--device cpu|
 
 ## 6. Rendimiento esperado (en CPU) y audios largos
 
-El tiempo depende mucho de tu CPU. **Medición real en un portátil de bajo consumo, sin GPU:**
-procesar el audio toma aproximadamente **2× su duración** (transcripción ~1× + diarización ~1×):
+El tiempo depende mucho de tu CPU. **Medición real en un portátil sin GPU dedicada**
+(septiembre de 2026, 22 reuniones reales, modelo `large-v3-turbo` **con hablantes**):
+procesar el audio toma aproximadamente **1.1× su duración** usando casi todos los núcleos,
+y ~1.45× si se limitan para dejar el equipo usable. Más ~12 s de carga de modelos al
+arrancar (una vez por ejecución, no por archivo).
 
 | Duración del audio | Tiempo aprox. en ese portátil |
 |---|---|
-| 30 min | ~1 hora |
-| 1 hora | ~2 horas |
-| 3 horas | ~6 horas |
+| 30 min | ~35 min |
+| 1 hora | ~1 h 5 min |
+| 3 horas | ~3 h 15 min |
 
 En un equipo con CPU más potente (más núcleos rápidos) será bastante más rápido. El paso más lento
 es la **diarización** (extracción de *embeddings* de los hablantes). Dividir en bloques NO acelera
@@ -215,6 +240,7 @@ Transcriptor/
 │  ├─ diarize.py        # diarización (pyannote community-1)
 │  ├─ merge.py          # fusión texto <-> hablante por solape temporal
 │  └─ output.py         # escritura .txt / .srt / .json
+├─ tests/               # pruebas (python -m unittest discover -s tests)
 ├─ config.yaml          # valores por defecto
 ├─ requirements.txt
 ├─ .env.example         # plantilla del token de Hugging Face
