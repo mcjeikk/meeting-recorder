@@ -1,0 +1,14 @@
+# ===== Dependencias del Transcriptor (CPU) =====
+# Instala primero PyTorch en versión CPU (ver README):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Transcripción Whisper optimizada para CPU (CTranslate2)
+faster-whisper>=1.1.0
+
+# Diarización de hablantes (pyannote.audio 4.x + modelo community-1)
+pyannote.audio>=4.0.7
+
+# Utilidades
+PyYAML>=6.0
+python-dotenv>=1.0.1
+rich>=13.7.0
