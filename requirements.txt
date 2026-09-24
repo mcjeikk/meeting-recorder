@@ -16,6 +16,14 @@ numpy>=1.24
 # Binario de FFmpeg empaquetado (encode + mux). Evita instalar FFmpeg aparte.
 imageio-ffmpeg>=0.4.9
 
+# Control del proceso de transcripción (pausar/reanudar al grabar, prioridad,
+# re-adoptar un proceso vivo tras reabrir la app). Sin esto la app no abre.
+psutil>=5.9
+
+# Frames de la captura de ventana (la app lo usa directamente; windows-capture
+# también lo trae, pero no conviene depender de eso).
+opencv-python>=4.8
+
 # Captura de VENTANA con Windows.Graphics.Capture (capta contenido por GPU, como
 # Teams/Chrome, que con gdigrab salía negro). Trae opencv-python como dependencia.
 windows-capture>=2.0.0 ; sys_platform == "win32"

@@ -18,13 +18,20 @@
 
 ## Phase 3 — Publishing and documentation
 
-- [ ] **T007** Transcriptor: commit the pending work (multi-file CLI, exclusive speakers, model reuse, WAV reuse, thread cap, pyannote 4.0.7, its tests) and push. (FR-001)
-- [ ] **T008** Transcriptor README: usage from the Recorder, measured speed, when ffmpeg is needed, running its tests. (FR-007)
-- [ ] **T009** Recorder README: one ordered installation path for recording and transcription. (FR-007)
-- [ ] **T010** Recorder: full suite green; commit and push.
+- [x] **T007** Transcriptor: commit the pending work (multi-file CLI, exclusive speakers, model reuse, WAV reuse, thread cap, pyannote 4.0.7, its tests) and push. (FR-001) — `2d6881e`
+- [x] **T008** Transcriptor README: usage from the Recorder, measured speed, when ffmpeg is needed, running its tests. (FR-007) — `80c9560`
+- [x] **T009** Recorder README: one ordered installation path for recording and transcription. (FR-007)
+- [x] **T010** Recorder: full suite green; commit and push. — `e580038`
 
 ## Phase 4 — Acceptance (the run that proves it)
 
-- [ ] **T011** In a clean folder, with `APPDATA` pointing to an empty folder, clone both repositories from GitHub, install each as its README says, and run both test suites. (SC-004)
-- [ ] **T012** Fresh Transcriptor: two files in one call produce two transcripts. (SC-002)
+- [x] **T011** In a clean folder whose path contains a space, clone both repositories from GitHub and install each exactly as its README says. Transcriptor: 10 tests OK on torch 2.14.0+cpu / torchaudio 2.11.0 / ctranslate2 4.8.2 — newer than the author's validated environment. **Recorder: 206 of 243 tests ran, 9 import errors: `No module named 'psutil'`; the app did not open.** (SC-004) → T014–T017
+- [x] **T012** Fresh Transcriptor: `uno.wav dos.wav` in one call → "Archivos a procesar: 2", both "Audio ya en WAV 16 kHz; se omite reconversión", both with speakers, exit 0, two transcripts. (SC-002)
 - [ ] **T013** Fresh Recorder, no configuration: `verify_transcription.py --quick` on a real recording finds the fresh Transcriptor on its own and returns a transcript with speakers. (SC-001, SC-003)
+
+## Phase 5 — What the acceptance run caught
+
+- [x] **T014** `requirements.txt`: declare `psutil` (worker: suspend/resume, priority, re-adoption) and `opencv-python` (imported directly by the capture code). (FR-008)
+- [x] **T015** `tests/test_requirements_declared.py`: every third-party import under `app/` must map to a declared distribution; verified to fail against the old `requirements.txt`. (FR-008)
+- [x] **T016** `smoke_test.py`: load the whole app (fails if a dependency is missing) and report transcription readiness — Transcriptor path and whether a Hugging Face token is set, never printing it. (FR-009)
+- [ ] **T017** Fresh clone updated the way a user would (`git pull` + `pip install -r requirements.txt`): full suite green and `smoke_test.py` OK. (SC-004)

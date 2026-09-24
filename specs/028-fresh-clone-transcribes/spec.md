@@ -16,6 +16,7 @@ Reviewing the project as a newcomer would, following both READMEs literally, fou
 2. **The Transcriptor was not found where `git clone` puts it.** Cloning both repositories yields `meeting-recorder\` and `meeting-transcriber\` side by side; autodetection only looked for a folder called `Transcriptor`.
 3. **Opening the app before installing the Transcriptor broke it later.** The first launch saves an empty `transcriptor_dir`. The availability check then autodetects and answers "available", but the worker launches the CLI with the saved empty path.
 4. **The first verification step fails for a newcomer.** `verify_transcription.py --quick` samples "the last recording", and a new user has none; the error said so and nothing more.
+5. **Found by the acceptance run itself: the app did not open on a fresh install.** `psutil` was imported by the transcription worker — which the main window imports — but never declared in `requirements.txt`; the author's environment had it installed by hand. A fresh clone ran 206 of 243 tests with 9 import errors, and `smoke_test.py` still said OK because it never loaded the app. `cv2` was also imported directly while arriving only as a dependency of `windows-capture`.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -51,6 +52,8 @@ As someone new to the project I want to clone both repositories, follow the inst
 - **FR-005**: The CLI MUST never be launched from a path that failed the availability check.
 - **FR-006**: The verification script MUST tell a user without recordings how to verify anyway, and a user without a Transcriptor where it is expected.
 - **FR-007**: The installation instructions MUST describe one ordered path from nothing to a transcript with speakers, including the Python version, the side-by-side layout, the Hugging Face token and model terms, and the first model download.
+- **FR-008**: Every third-party module the app imports MUST be declared in `requirements.txt`, and a test MUST fail when one is not.
+- **FR-009**: The environment check (`smoke_test.py`) MUST fail when the app cannot load, and MUST report whether transcription is ready (Transcriptor found, Hugging Face token present) without failing when it is not, since transcription is optional.
 
 ## Success Criteria *(mandatory)*
 

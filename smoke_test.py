@@ -3,13 +3,51 @@
 Ejecuta:  python smoke_test.py
 
 Comprueba que:
+- La app se puede cargar (todas sus dependencias están instaladas).
 - FFmpeg está disponible y detecta un encoder H.264.
 - Se enumeran ventanas y micrófonos.
 - Existe un dispositivo de loopback (audio del sistema).
+- (Informativo) si la transcripción está lista: Transcriptor y token de Hugging Face.
 """
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+
+def _hf_token_configured(transcriptor_dir: str) -> bool:
+    """True si el .env del Transcriptor trae un token que no es el de ejemplo."""
+    try:
+        texto = (Path(transcriptor_dir) / ".env").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for linea in texto.splitlines():
+        clave, _, valor = linea.partition("=")
+        if clave.strip() == "HUGGINGFACE_TOKEN":
+            valor = valor.strip().strip('"').strip("'")
+            return valor.startswith("hf_") and "xxxx" not in valor
+    return False
+
+
+def check_transcription() -> None:
+    """Estado de la transcripción. Es opcional: nunca hace fallar el smoke test."""
+    print("== Transcripción (opcional) ==")
+    try:
+        from app.core.config import AppConfig
+        from app.transcription.integration import is_available
+
+        cfg = AppConfig.load()
+        if not is_available(cfg.transcriptor_dir):
+            print("  Sin Transcriptor: la app grabará pero no transcribirá.")
+            print("  Instálalo junto a esta carpeta (README, paso B).")
+            return
+        print("  Transcriptor:", cfg.transcriptor_dir)
+        if _hf_token_configured(cfg.transcriptor_dir):
+            print("  Token de Hugging Face: configurado")
+        else:
+            print("  AVISO: sin token de Hugging Face en su .env -> transcribirá SIN hablantes.")
+    except Exception as exc:
+        print("  AVISO:", exc)
 
 
 def main() -> int:
@@ -20,6 +58,16 @@ def main() -> int:
         pass
 
     ok = True
+
+    print("== App ==")
+    try:
+        import app.ui.main_window  # noqa: F401 — carga toda la app, sin abrir ventana
+
+        print("  OK: la app carga con todas sus dependencias")
+    except Exception as exc:
+        ok = False
+        print("  ERROR:", exc)
+        print("  Reinstala las dependencias: python -m pip install -r requirements.txt")
 
     print("== FFmpeg ==")
     try:
@@ -85,6 +133,8 @@ def main() -> int:
             print("  ERROR:", exc)
     else:
         print("  (omitido: solo Windows en la Fase 1)")
+
+    check_transcription()
 
     print()
     print("RESULTADO:", "OK" if ok else "HAY ERRORES")
