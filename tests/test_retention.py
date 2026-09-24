@@ -193,6 +193,12 @@ class TestApply(unittest.TestCase):
                 finished_at=(NOW - timedelta(days=i * 1.2)).isoformat(timespec="milliseconds"),
             )
             self.store.save(job)
+        # Con Defender en tiempo real, la PRIMERA apertura de cada archivo recién
+        # escrito cuesta ~14 ms (lo escanea): 300 archivos = ~4.3 s, y la segunda
+        # lectura 0.03 s. En la cola real los registros nacen de a uno a lo largo
+        # de semanas; aquí nacen todos a la vez. Se lee una vez antes de medir
+        # para que el tiempo sea el de la poda y no el del antivirus.
+        self.store.all()
         t0 = time.perf_counter()
         primera = self.store.prune_history(now=NOW)
         elapsed = time.perf_counter() - t0
