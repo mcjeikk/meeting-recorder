@@ -15,38 +15,84 @@ El resultado es un archivo **MP4** con **pistas de audio separadas** (sistema y 
 ## ✅ Requisitos
 
 - **Windows 10/11**
-- **Python 3.10 o superior** ([descargar](https://www.python.org/downloads/))
+- **[Python 3.11](https://www.python.org/downloads/release/python-3119/)** y
+  **[git](https://git-scm.com/download/win)**. Para solo grabar basta 3.10+, pero la
+  transcripción necesita **3.11** (PyTorch/pyannote aún no tienen paquetes para 3.12+).
+  Si ya tienes otro Python, no pasa nada: los comandos de abajo piden 3.11 explícitamente.
 - No necesitas instalar FFmpeg aparte: viene incluido vía `imageio-ffmpeg`.
 - No necesitas "Stereo Mix" ni cables virtuales: el audio del sistema se captura con **WASAPI loopback**.
+- Para **identificar hablantes**: una cuenta gratuita de [Hugging Face](https://huggingface.co/join).
 
 ---
 
 ## 🚀 Instalación (paso a paso)
 
-Necesitas **[git](https://git-scm.com/download/win)** y **[Python 3.10+](https://www.python.org/downloads/)**
-instalados. Abre **PowerShell** y ejecuta:
+Son dos proyectos que se instalan **lado a lado en la misma carpeta**: el Grabador y,
+si quieres transcribir, el Transcriptor. La app encuentra al segundo sola.
 
-```powershell
-# 1) Clonar el repositorio
-git clone https://github.com/mcjeikk/meeting-recorder.git
-cd meeting-recorder
-
-# 2) Crear un entorno virtual (aísla las dependencias).
-#    Se recomienda Python 3.11. Si el lanzador "py" no existe, usa "python".
-py -3.11 -m venv .venv        # alternativa:  python -m venv .venv
-
-# 3) Activarlo
-.\.venv\Scripts\Activate.ps1
-
-# 4) Instalar las dependencias
-pip install -r requirements.txt
-
-# 5) (Opcional) Comprobar que el entorno quedó correcto
-python smoke_test.py
+```
+Proyectos\                 ← cualquier carpeta tuya
+├─ meeting-recorder\       ← A. el Grabador
+└─ meeting-transcriber\    ← B. el Transcriptor (opcional)
 ```
 
-> Si PowerShell bloquea la activación, ejecuta una vez:
+> Si PowerShell bloquea la activación de un entorno (`Activate.ps1`), ejecuta una vez:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
+### A. El Grabador (grabar)
+
+Abre **PowerShell** en la carpeta donde quieras tener los proyectos y ejecuta:
+
+```powershell
+git clone https://github.com/mcjeikk/meeting-recorder.git
+cd meeting-recorder
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python smoke_test.py          # (opcional) comprueba el entorno
+cd ..
+```
+
+Con esto ya puedes **grabar** (ver *Abrir la app*). Si no vas a transcribir, has terminado.
+
+### B. El Transcriptor (transcribir, con hablantes)
+
+Desde **la misma carpeta** (la que contiene `meeting-recorder`):
+
+```powershell
+git clone https://github.com/mcjeikk/meeting-transcriber.git
+cd meeting-transcriber
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+# PyTorch en versión CPU, ANTES que el resto (desde el índice de PyTorch, no de PyPI):
+python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -r requirements.txt
+copy .env.example .env        # aquí irá tu token de Hugging Face
+deactivate
+cd ..
+```
+
+**Token de Hugging Face** (sin él transcribe igual, pero **sin hablantes**):
+
+1. Crea un token de lectura en <https://huggingface.co/settings/tokens>.
+2. Con esa misma cuenta, **acepta las condiciones** (gratis) de
+   <https://huggingface.co/pyannote/speaker-diarization-community-1>.
+3. Abre `meeting-transcriber\.env` y pega el token: `HUGGINGFACE_TOKEN=hf_...`
+
+### C. Comprobar que transcribe
+
+```powershell
+cd meeting-recorder
+.\.venv\Scripts\Activate.ps1
+python verify_transcription.py --quick "C:\ruta\cualquier_audio_o_video.mp4"
+```
+
+Transcribe una **muestra** de 60 s en una carpeta temporal (no ensucia nada) y dice
+cuántos hablantes encontró. Si ya grabaste algo con la app, puedes omitir la ruta y usa
+tu última grabación. **La primera vez descarga los modelos (~1.5 GB)** y tarda unos
+minutos; después funciona sin internet.
+
+Luego, en la app, marca **"📝 Transcribir al terminar"**.
 
 ---
 
@@ -204,12 +250,15 @@ transcripciones (de reuniones y de archivos importados) quedan en la
 
 > ⚠️ **La transcripción es opcional y depende de un proyecto aparte.** El **Transcriptor**
 > (faster-whisper + pyannote) **no viene incluido en este repositorio**; se instala por
-> separado desde **<https://github.com/mcjeikk/meeting-transcriber>**. Si no lo tienes, la
-> grabación funciona igual: solo no se generará la transcripción.
+> separado desde **<https://github.com/mcjeikk/meeting-transcriber>** (pasos B y C de la
+> *Instalación*). Si no lo tienes, la grabación funciona igual: solo no se generará la
+> transcripción.
 
-- El proyecto **Transcriptor** debe estar instalado con su propio `.venv`, normalmente en
-  una carpeta hermana (la ruta se autodetecta; se puede fijar con `transcriptor_dir` en
-  `%APPDATA%\MeetingRecorder\config.json`, junto a `transcription_language` y
+- El proyecto **Transcriptor** debe estar instalado con su propio `.venv` en una carpeta
+  hermana llamada `meeting-transcriber` (la que crea `git clone`) o `Transcriptor`. Se
+  autodetecta al arrancar y antes de cada trabajo, así que da igual si lo instalas
+  después de haber abierto la app. Para otra ubicación, fija `transcriptor_dir` en
+  `%APPDATA%\MeetingRecorder\config.json` (junto a `transcription_language` y
   `pause_transcription_while_recording`).
 - La cola guarda historial **reciente**: los trabajos terminados se olvidan tras 30 días
   (o cuando pasan de 200), junto con sus logs. Tus transcripciones no se tocan nunca, y
@@ -219,7 +268,8 @@ transcripciones (de reuniones y de archivos importados) quedan en la
   grabación y trabaja en una carpeta temporal: no toca tus transcripciones ni tu cola.
 
 ```powershell
-python verify_transcription.py --quick                # muestra de 60 s, con hablantes
+python verify_transcription.py --quick                # muestra de 60 s de la última grabación
+python verify_transcription.py --quick "audio.mp3"    # muestra de cualquier audio o vídeo
 python verify_transcription.py --quick --no-speakers  # lo más rápido
 python verify_transcription.py "ruta.mp4" --force     # transcribir una concreta, completa
 ```

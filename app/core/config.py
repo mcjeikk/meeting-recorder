@@ -97,23 +97,46 @@ def apply_selected_output_dir(cfg: "AppConfig", folder: str | Path) -> Path:
     return resolved
 
 
-def default_transcriptor_dir() -> str:
+# Nombres con los que el Transcriptor aparece junto al Recorder: el de un
+# `git clone` tal cual (meeting-transcriber) y el de la carpeta de desarrollo.
+_TRANSCRIPTOR_FOLDER_NAMES = ("meeting-transcriber", "Transcriptor")
+
+
+def _looks_like_transcriptor(path: Path) -> bool:
+    return (path / "transcribe.py").is_file()
+
+
+def default_transcriptor_dir(recorder_root: Optional[Path] = None) -> str:
     """Mejor estimación de la carpeta del proyecto Transcriptor.
 
-    El Transcriptor vive junto al Recorder (Apps/Transcriptor). Se prueba también
-    la ubicación antigua (Proyectos/Transcriptor) por compatibilidad. Si no está
-    en ninguna, se devuelve cadena vacía y el usuario puede fijar la ruta en
-    config.json.
+    Se busca como carpeta hermana del Recorder, con el nombre que deja `git
+    clone` o el de la carpeta de desarrollo; también en la ubicación antigua
+    (un nivel más arriba). Si no está, cadena vacía y el usuario puede fijar la
+    ruta en config.json.
     """
-    recorder_root = Path(__file__).resolve().parents[2]
-    candidatos = (
-        recorder_root.parent / "Transcriptor",          # Apps/Transcriptor (actual)
-        recorder_root.parent.parent / "Transcriptor",   # Proyectos/Transcriptor (legado)
-    )
-    for candidato in candidatos:
-        if (candidato / "transcribe.py").exists():
-            return str(candidato)
+    root = Path(recorder_root) if recorder_root else Path(__file__).resolve().parents[2]
+    for base in (root.parent, root.parent.parent):
+        for nombre in _TRANSCRIPTOR_FOLDER_NAMES:
+            candidato = base / nombre
+            if _looks_like_transcriptor(candidato):
+                return str(candidato)
     return ""
+
+
+def resolve_transcriptor_dir(
+    configured: str, recorder_root: Optional[Path] = None
+) -> str:
+    """La ruta guardada si sigue siendo un Transcriptor; si no, autodetectar.
+
+    Quien abre la app antes de instalar el Transcriptor deja la ruta vacía en
+    config.json, y quien mueve la carpeta la deja obsoleta: en ambos casos
+    buscarlo de nuevo en vez de lanzar el CLI con una ruta que no sirve. Si no
+    aparece en ningún sitio, se conserva lo guardado para que el error la nombre.
+    """
+    texto = str(configured or "").strip()
+    if texto and _looks_like_transcriptor(Path(texto)):
+        return texto
+    return default_transcriptor_dir(recorder_root) or texto
 
 
 @dataclass
@@ -209,6 +232,7 @@ class AppConfig:
                 cfg.transcription_num_speakers = normalize_num_speakers(
                     getattr(cfg, "transcription_num_speakers", 0)
                 )
+                cfg.transcriptor_dir = resolve_transcriptor_dir(cfg.transcriptor_dir)
                 return cfg
             except Exception:
                 pass  # config corrupta -> usar valores por defecto

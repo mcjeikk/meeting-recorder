@@ -56,7 +56,11 @@ def pick_recording(cfg: AppConfig, explicit: Optional[str] = None) -> Path:
     carpeta = Path(cfg.output_dir or ".")
     candidatos = sorted(carpeta.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
     if not candidatos:
-        raise FileNotFoundError(f"No hay grabaciones .mp4 en {carpeta}")
+        raise FileNotFoundError(
+            f"No hay grabaciones .mp4 en {carpeta}.\n"
+            "Graba una prueba corta con la app, o indica cualquier audio o vídeo:\n"
+            '  python verify_transcription.py --quick "C:\\ruta\\audio.mp3"'
+        )
     return candidatos[-1]
 
 
@@ -186,6 +190,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             "No encuentro el Transcriptor con su venv en:",
             cfg.transcriptor_dir or "(sin configurar)",
+        )
+        print(
+            "Clónalo junto a esta carpeta (meeting-transcriber\\ o Transcriptor\\) con su\n"
+            ".venv instalado, o fija 'transcriptor_dir' en\n"
+            "%APPDATA%\\MeetingRecorder\\config.json."
         )
         return EXIT_ENV
 

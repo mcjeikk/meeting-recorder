@@ -27,7 +27,7 @@ from typing import Callable, Optional, Sequence, Tuple
 
 import psutil
 
-from app.core.config import AppConfig
+from app.core.config import AppConfig, resolve_transcriptor_dir
 from app.transcription import jobs as J
 from app.transcription.integration import (
     build_command,
@@ -291,7 +291,10 @@ class TranscriptionWorker:
         if self._job_cancelled(job.id):
             return
         cfg = self._get_config()
-        if not is_available(cfg.transcriptor_dir):
+        # Se resuelve en cada job: el Transcriptor pudo instalarse o moverse con
+        # la app abierta, y una ruta vacía no puede llegar a `cwd` del CLI.
+        tx_dir = resolve_transcriptor_dir(cfg.transcriptor_dir)
+        if not is_available(tx_dir):
             self._fail(job, "No se encontró el proyecto Transcriptor (revisa transcriptor_dir)", retry=False)
             return
 
@@ -364,7 +367,7 @@ class TranscriptionWorker:
             )
         )
         cmd = build_command(
-            cfg.transcriptor_dir,
+            tx_dir,
             wavs,
             lead.language,
             output_dir_for(
@@ -384,7 +387,7 @@ class TranscriptionWorker:
             log.flush()
             proc = subprocess.Popen(
                 cmd,
-                cwd=cfg.transcriptor_dir,
+                cwd=tx_dir,
                 env=subprocess_env(impact),
                 stdin=subprocess.DEVNULL,
                 stdout=log,
