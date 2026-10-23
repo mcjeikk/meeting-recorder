@@ -25,6 +25,15 @@ def _apply_macos(view_ptr: Optional[int], exclude_from_capture: bool) -> bool:
     if not view_ptr:
         return True
     try:
+        from PySide6.QtGui import QGuiApplication
+
+        # Solo con la plataforma "cocoa" el winId es un NSView*: con "offscreen"
+        # (tests, CI) desreferenciarlo tumba el proceso.
+        if QGuiApplication.platformName() != "cocoa":
+            return True
+    except Exception:
+        return True
+    try:
         import objc
 
         vista = objc.objc_object(c_void_p=int(view_ptr))

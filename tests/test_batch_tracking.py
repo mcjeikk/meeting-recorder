@@ -428,11 +428,11 @@ class TestPerFileAttribution(unittest.TestCase):
 
     def test_cli_name_from_job_fields(self) -> None:
         self.assertEqual(
-            cli_name_for_job(SimpleNamespace(work_wav=r"C:\w\x\Reunión 1.wav")),
+            cli_name_for_job(SimpleNamespace(work_wav=str(Path("w") / "x" / "Reunión 1.wav"))),
             "Reunión 1.wav",
         )
         self.assertEqual(
-            cli_name_for_job(SimpleNamespace(work_wav="", media_path=r"C:\v\Clip.mp4")),
+            cli_name_for_job(SimpleNamespace(work_wav="", media_path=str(Path("v") / "Clip.mp4"))),
             "Clip.wav",
         )
 
