@@ -99,11 +99,16 @@ class TestAtomicSave(unittest.TestCase):
                 duenos.setdefault(nombre, set()).add(threading.get_ident())
             return real_write(self_path, *a, **kw)
 
+        # Los cuatro siguen vivos hasta que todos guardaron: un hilo terminado
+        # puede ceder su ident (macOS lo reutiliza) y eso no es una carrera.
+        todos = threading.Barrier(4)
+
+        def guardar() -> None:
+            self.store.save(self.job)
+            todos.wait(30)
+
         with patch.object(Path, "write_text", espia):
-            hilos = [
-                threading.Thread(target=lambda: self.store.save(self.job))
-                for _ in range(4)
-            ]
+            hilos = [threading.Thread(target=guardar) for _ in range(4)]
             for h in hilos:
                 h.start()
             for h in hilos:
