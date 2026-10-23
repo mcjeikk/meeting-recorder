@@ -122,8 +122,17 @@ def main() -> int:
         if not ok:
             print("Da permiso de «Grabación de pantalla» al proceso que lanza esto y repite.")
         return 0 if ok else 1
+    # En el MISMO proceso: un hijo lanzado por un proceso que ya usó
+    # ScreenCaptureKit ve cada stream cortado («application connection being
+    # interrupted»), aunque tenga permiso y liste las pantallas.
     print("==> Clips reales (verify_pipeline.py)", flush=True)
-    code = subprocess.run([sys.executable, str(ROOT / "verify_pipeline.py")], cwd=str(ROOT)).returncode
+    import runpy
+
+    try:
+        runpy.run_path(str(ROOT / "verify_pipeline.py"), run_name="__main__")
+        code = 0
+    except SystemExit as e:
+        code = int(e.code or 0)
     if code != 0:
         dump_capture_log()
     return code

@@ -106,6 +106,34 @@ El README cubre el uso; este archivo documenta lo que NO es obvio desde el códi
   por señales (`_tx_update_sig`, etc.). El encolado en `_on_finished` debe ocurrir
   ANTES del check de `_quit_after_finalize` (la app puede morir justo después).
 
+## macOS (spec 030, oct-2026)
+
+Apple Silicon, macOS 13+, `.dmg` sin firmar (ad-hoc) que construye
+`.github/workflows/macos.yml` en `macos-14` (no hace falta un Mac para compilar).
+El motor NO viaja en el `.dmg`: `engine_setup.py` lo instala al primer uso con
+el `uv` empaquetado en `~/Library/Application Support/MeetingRecorder/engine`
+(en CI tarda ~36 s). El token HF va a `<motor>/transcriptor/.env` (modo 600);
+el `--self-check` del bundle FALLA si viaja un `.env`.
+
+- **El runner de CI SÍ tiene permiso de Grabación de pantalla**: ScreenCaptureKit
+ graba de verdad ahí (`verify_pipeline.py` B y E en verde). No tiene micrófono.
+- **Un proceso HIJO de otro que ya usó ScreenCaptureKit ve cada stream cortado**
+ ("application connection being interrupted"), aunque liste pantallas. Por eso
+ `mac_capture_check.py` corre `verify_pipeline` en el mismo proceso y CI lo corre
+ en un paso propio. La app es un solo proceso: no le afecta.
+- **VideoToolbox aparece en `ffmpeg -encoders` pero falla en la VM** (-22): se
+ elige `libx264`, y a 1080p30 ffmpeg se atrasa. `FramePipeWriter` cuenta
+ fotogramas contra el reloj y repite el último para ponerse al día; reiniciar el
+ reloj (lo que hacía) dejaba el video más corto que el audio (5,1 s para 7 s).
+- **Qt offscreen + `winId()` en macOS = segfault**: `capture_affinity` solo toca la
+ NSWindow si `platformName() == "cocoa"`.
+- **La copia del motor ignora `tests/salida/input/output/.env` SOLO en la raíz**:
+ un patrón global `output*` se comió `pipeline/output.py` y el CLI no importaba.
+- Los ids de hilo se reciclan al terminar un hilo: un test que compare temporales
+ por hilo debe mantener los hilos vivos (Barrier), o falla al azar en macOS.
+- `requirements.lock.macos13.txt` NO está verificado en CI (los runners de macOS 13
+ son Intel); el de 14+ sí.
+
 ## Rendimiento medido (laptop sin GPU dedicada)
 
 - Transcripción (con hablantes) ≈ **1.08× la duración del audio** con "Usar más CPU"
