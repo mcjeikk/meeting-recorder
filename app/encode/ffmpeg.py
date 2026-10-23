@@ -25,7 +25,11 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # Orden de preferencia: hardware primero (mucho más liviano para grabar pantalla),
 # software (libx264) como red de seguridad universal.
-_H264_CANDIDATES = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
+_H264_CANDIDATES = (
+    ["h264_videotoolbox", "libx264"]
+    if sys.platform == "darwin"
+    else ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
+)
 
 _cached_encoder: Optional[str] = None
 

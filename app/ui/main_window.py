@@ -5,7 +5,13 @@ Funciones de la interfaz:
 - Selección de micrófono que se puede CAMBIAR EN VIVO durante la grabación.
 - Interruptor de audio del sistema, con medidores de nivel de color.
 - Botón grande Grabar/Detener + Pausar/Reanudar, cronómetro e indicador de grabación.
-- Ícono en la bandeja del sistema y atajos de teclado GLOBALES (Ctrl+Shift+R/P).
+- Ícono en la bandeja del sistema y atajos de teclado GLOBALES (Windows:
+  Ctrl+Shift+R/P/M; macOS: ⌃⌥R/P/M).
+
+macOS (spec 030): las fuentes y capturas salen de `app.capture.sources`
+(ScreenCaptureKit), se piden permisos antes de grabar, el motor de
+transcripción se instala al primer uso y se ocultan los controles que solo
+tienen sentido en Windows (uso del micrófono, auto-silencio, aviso Bluetooth).
 """
 from __future__ import annotations
 
@@ -50,6 +56,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.capture import sources as capture_sources
 from app.capture.monitor import AudioMonitor
 from app.core.config import (
     AppConfig,
@@ -74,6 +81,7 @@ from app.core.mic_usage import (
 from app.core.orchestrator import Recorder
 from app.transcription.import_media import (
     ALREADY_DONE,
+    OK,
     enqueue_imports,
     file_dialog_filter,
     summarize_import_results,
@@ -107,6 +115,8 @@ from app.ui.preview_policy import (
     should_pause_idle_wgc_preview,
     transcription_status_is_open,
 )
+
+_MAC = sys.platform == "darwin"
 # --- Paleta y estilos (tema oscuro) -----------------------------------------
 _ACCENT = "#2ecc71"
 _DANGER = "#e74c3c"
@@ -340,7 +350,9 @@ class MainWindow(QMainWindow):
             get_config=lambda: self._config,
             on_update=self._tx_update_sig.emit,
             is_recording=self._recorder.is_recording,
+            engine_ready=self._engine_ready_for_worker if _MAC else None,
         )
+        self._engine_panel = None  # macOS: se crea en _build_ui
         self._tx_update_sig.connect(self._on_tx_update)
         self._preview_ready_sig.connect(self._on_preview_ready)
 
@@ -482,6 +494,10 @@ class MainWindow(QMainWindow):
         )
         self._auto_mute_check.toggled.connect(self._on_auto_mute_toggled)
         mic_lay.addWidget(auto_wrap)
+        if _MAC:
+            # Dependen del registro de consentimiento de Windows (quién usa el mic).
+            self._mic_usage_label.setVisible(False)
+            auto_wrap.setVisible(False)
         root.addWidget(mic_box)
 
         sys_box = QGroupBox("3. Audio del sistema")
@@ -517,6 +533,12 @@ class MainWindow(QMainWindow):
         out_v.addLayout(out_btns)
         tx_wrap, self._tx_check = _wrapping_check("📝 Transcribir al terminar")
         out_v.addWidget(tx_wrap)
+        if _MAC:
+            from app.ui.engine_dialogs import EnginePanel
+
+            self._engine_panel = EnginePanel(self._recorder.is_recording, self)
+            self._engine_panel.readiness_changed.connect(lambda _ok: self._refresh_tx_queue())
+            out_v.addWidget(self._engine_panel)
         self._tx_file_btn = QPushButton("Transcribir archivo…")
         self._tx_file_btn.setCursor(Qt.PointingHandCursor)
         self._tx_file_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -824,7 +846,13 @@ class MainWindow(QMainWindow):
         self._tray.show()
 
     def _setup_hotkeys(self) -> None:
-        self._hotkeys = GlobalHotkeys(
+        if _MAC:
+            from app.ui.hotkeys_mac import MacGlobalHotkeys
+
+            hotkeys_cls = MacGlobalHotkeys
+        else:
+            hotkeys_cls = GlobalHotkeys
+        self._hotkeys = hotkeys_cls(
             self._toggle_record, self._toggle_pause, self._toggle_mute
         )
         try:
@@ -836,6 +864,16 @@ class MainWindow(QMainWindow):
 
     def _setup_device_watcher(self) -> None:
         """Auto-refresh de mics ante hotplug Windows (debounce en MainWindow)."""
+        if _MAC:
+            # Sin WM_DEVICECHANGE: se compara la lista de entradas cada 3 s.
+            from app.ui import mac_devices
+
+            self._mac_inputs = mac_devices.audio_input_names()
+            self._mac_device_poll = QTimer(self)
+            self._mac_device_poll.setInterval(3000)
+            self._mac_device_poll.timeout.connect(self._poll_mac_devices)
+            self._mac_device_poll.start()
+            return
         self._device_watcher = DeviceChangeWatcher(self._on_device_change_event)
         try:
             from PySide6.QtWidgets import QApplication
@@ -843,6 +881,29 @@ class MainWindow(QMainWindow):
             QApplication.instance().installNativeEventFilter(self._device_watcher)
         except Exception:
             pass
+
+    def _poll_mac_devices(self) -> None:
+        from app.ui import mac_devices
+
+        actuales = mac_devices.audio_input_names()
+        if mac_devices.changed(self._mac_inputs, actuales):
+            self._mac_inputs = actuales
+            self._on_device_change_event()
+
+    @staticmethod
+    def _engine_ready_for_worker() -> bool:
+        from app.transcription.engine_setup import is_ready
+
+        return is_ready()
+
+    def _tx_tool_available(self) -> bool:
+        """En macOS el motor se instala al primer uso: se puede pedir transcribir
+        siempre (el trabajo espera en cola hasta que el motor esté listo)."""
+        return _MAC or transcriptor_disponible(self._config.transcriptor_dir)
+
+    def _offer_engine_if_missing(self) -> None:
+        if self._engine_panel is not None and not self._engine_panel.is_ready():
+            QTimer.singleShot(0, self._engine_panel.offer_install_if_needed)
 
     def _on_device_change_event(self) -> None:
         # Reinicia debounce: ráfagas PnP → un solo refresh.
@@ -942,20 +1003,25 @@ class MainWindow(QMainWindow):
         return False
 
     def _refresh_sources(self) -> None:
-        from app.capture.windows_video import list_monitors, list_windows
-
         prev = self._source_combo.currentData()
         self._source_combo.blockSignals(True)
         self._source_combo.clear()
-        monitors = list_monitors() if sys.platform == "win32" else [
-            VideoSource(kind="screen", title="Pantalla 1", monitor_index=1, is_primary=True)
-        ]
+        try:
+            monitors = capture_sources.list_monitors()
+        except Exception:
+            monitors = []
+        if not monitors:
+            monitors = [
+                VideoSource(kind="screen", title="Pantalla 1", monitor_index=1, is_primary=True)
+            ]
         for m in monitors:
             self._source_combo.addItem(f"🖥️  {m.label}", userData=m)
-        if sys.platform == "win32":
-            self._windows = list_windows()
-            for w in self._windows:
-                self._source_combo.addItem(f"🪟  {w.title}", userData=w)
+        try:
+            self._windows = capture_sources.list_windows()
+        except Exception:
+            self._windows = []
+        for w in self._windows:
+            self._source_combo.addItem(f"🪟  {w.title}", userData=w)
         # Conservar selección: monitor por índice; ventana por título.
         if isinstance(prev, VideoSource):
             if prev.kind == "screen" and prev.monitor_index:
@@ -1061,9 +1127,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_sys_route_label"):
             return
         try:
-            from app.capture.windows_audio import describe_system_audio_route
-
-            info = describe_system_audio_route()
+            info = capture_sources.describe_system_audio_route()
         except Exception:
             self._sys_route_label.setText("")
             return
@@ -1091,7 +1155,7 @@ class MainWindow(QMainWindow):
         self._hide_self_check.blockSignals(True)
         self._hide_self_check.setChecked(bool(self._config.exclude_window_from_capture))
         self._hide_self_check.blockSignals(False)
-        disponible = transcriptor_disponible(self._config.transcriptor_dir)
+        disponible = self._tx_tool_available()
         self._tx_check.setEnabled(disponible)
         self._tx_check.setChecked(self._config.transcribe_after_recording and disponible)
         self._tx_preset.setEnabled(disponible)
@@ -1263,12 +1327,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         frame = None
         try:
-            from app.capture.windows_video import grab_monitor_frame, grab_window_frame
-
             if hwnd is not None:
-                frame = grab_window_frame(hwnd)
+                frame = capture_sources.grab_window_frame(hwnd)
             elif mon_idx is not None:
-                frame = grab_monitor_frame(mon_idx)
+                frame = capture_sources.grab_monitor_frame(mon_idx)
         except Exception:
             frame = None
         img = None
@@ -1436,10 +1498,12 @@ class MainWindow(QMainWindow):
             preset=normalize_preset(
                 self._tx_preset.currentData() or self._config.transcription_preset
             ),
-            tool_available=transcriptor_disponible(self._config.transcriptor_dir),
+            tool_available=self._tx_tool_available(),
             output_base=self._tx_output_base(),
         )
         summary = summarize_import_results(results)
+        if any(r.kind == OK for r in results):
+            self._offer_engine_if_missing()
         if summary:
             self._tx_import_status.setText(summary)
             self._tx_import_status.setVisible(True)
@@ -1492,11 +1556,11 @@ class MainWindow(QMainWindow):
                 return
         if not self._ensure_output_folder_for_record():
             return
+        if _MAC and not self._mac_permissions_ok():
+            return
         if self._sys_check.isChecked():
             try:
-                from app.capture.windows_audio import describe_system_audio_route
-
-                route = describe_system_audio_route()
+                route = capture_sources.describe_system_audio_route()
             except Exception:
                 route = {}
             if route.get("bluetooth"):
@@ -1525,6 +1589,26 @@ class MainWindow(QMainWindow):
         self._sys_silence_warned = False
         self._enter_busy("Iniciando grabación…", "Iniciando…")
         threading.Thread(target=self._do_start, args=(settings,), daemon=True).start()
+
+    def _mac_permissions_ok(self) -> bool:
+        """macOS: sin permiso de pantalla (o de micrófono, si hay uno elegido) no
+        se graba; se explica qué falta y se abre Ajustes en el sitio exacto."""
+        from app.core import mac_permissions as perms
+
+        faltan = perms.missing_for_recording(
+            needs_screen=True,
+            needs_microphone=self._mic_combo.currentData() is not None,
+        )
+        if not faltan:
+            return True
+        box = self._dialog(
+            QMessageBox.Warning, "Faltan permisos de macOS", perms.explanation(faltan),
+            QMessageBox.Open | QMessageBox.Cancel,
+        )
+        if box.exec() == QMessageBox.Open:
+            for m in faltan:
+                perms.open_settings(m.kind)
+        return False
 
     def _dialog(self, icon, title: str, text: str, buttons=QMessageBox.Ok):
         """Crea un QMessageBox con estilo legible sobre el tema oscuro."""
@@ -1639,7 +1723,7 @@ class MainWindow(QMainWindow):
         # Encolar la transcripción ANTES del posible cierre de la app: el job
         # queda persistido en disco y se procesa ahora o al siguiente arranque.
         encolada = False
-        if self._tx_check.isChecked() and transcriptor_disponible(self._config.transcriptor_dir):
+        if self._tx_check.isChecked() and self._tx_tool_available():
             try:
                 encolada = self._tx_worker.enqueue(
                     path,
@@ -1653,6 +1737,8 @@ class MainWindow(QMainWindow):
                 ) is not None
             except Exception:
                 pass
+        if encolada:
+            self._offer_engine_if_missing()
         sufijo = " · transcripción en cola" if encolada else ""
         self._result_label.setText(f"✓ Grabación guardada{sufijo}:  {os.path.basename(path)}")
         self._result_banner.setVisible(True)
@@ -1935,6 +2021,7 @@ class MainWindow(QMainWindow):
             # Si Sistema sigue en silencio varios segundos, avisar (BT / salida mala).
             if (
                 system_enabled
+                and not _MAC  # ScreenCaptureKit no pierde el audio por Bluetooth
                 and not self._recorder.is_paused()
                 and not self._sys_silence_warned
             ):
@@ -1988,6 +2075,8 @@ class MainWindow(QMainWindow):
                 self._update_system_route_hint()
 
     def _update_mic_usage(self) -> None:
+        if _MAC:
+            return  # sin registro de consentimiento: no se sabe quién usa el mic
         try:
             users = microphone_users((self._own_hint, "python"))
         except Exception:

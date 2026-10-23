@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -32,10 +33,10 @@ from app.transcription import jobs as J
 from app.transcription.integration import (
     build_command,
     cpu_threads_for_job,
-    creationflags_for_job,
     extract_audio_for_transcription,
     is_available,
     output_dir_for,
+    popen_platform_kwargs,
     result_dir_for,
     subprocess_env,
 )
@@ -76,11 +77,38 @@ _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
 
 
+_caffeinate: Optional[subprocess.Popen] = None
+
+
+def _keep_awake_mac(active: bool) -> None:
+    """macOS: `caffeinate -i` mientras haya trabajo; `-w` lo ata a la vida de la app."""
+    global _caffeinate
+    vivo = _caffeinate is not None and _caffeinate.poll() is None
+    if active and not vivo:
+        try:
+            _caffeinate = subprocess.Popen(
+                ["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            _caffeinate = None
+    elif not active and vivo:
+        try:
+            _caffeinate.terminate()
+        except OSError:
+            pass
+        _caffeinate = None
+
+
 def _keep_awake(active: bool) -> None:
     """Evita que el equipo se suspenda con un trabajo de horas en marcha.
 
     Es por-hilo: debe llamarse desde el hilo del worker (que vive toda la sesión).
     """
+    if sys.platform == "darwin":
+        _keep_awake_mac(active)
+        return
     if sys.platform != "win32":
         return
     flags = _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if active else 0)
@@ -119,11 +147,15 @@ class TranscriptionWorker:
         get_config: Callable[[], AppConfig],
         on_update: Callable[[dict], None],
         is_recording: Callable[[], bool],
+        engine_ready: Optional[Callable[[], bool]] = None,
     ) -> None:
         self._store = store
         self._get_config = get_config
         self._on_update = on_update
         self._is_recording = is_recording
+        # macOS: el motor se instala al primer uso. Mientras no esté, la cola
+        # espera en vez de fallar (los trabajos siguen pendientes).
+        self._engine_ready = engine_ready or (lambda: True)
         self._wake = threading.Event()
         self._stop = False
         self._thread: Optional[threading.Thread] = None
@@ -267,7 +299,7 @@ class TranscriptionWorker:
             self._reconcile()
             while not self._stop:
                 job = self._next_job()
-                if job is None or self._is_recording():
+                if job is None or self._is_recording() or not self._engine_ready_safe():
                     _keep_awake(False)
                     self._wake.wait(timeout=self.IDLE_SECONDS)
                     self._wake.clear()
@@ -281,6 +313,12 @@ class TranscriptionWorker:
                     self._current = None
         finally:
             _keep_awake(False)
+
+    def _engine_ready_safe(self) -> bool:
+        try:
+            return bool(self._engine_ready())
+        except Exception:
+            return False
 
     def _next_job(self) -> Optional[TranscriptionJob]:
         pendientes = self._store.pending()
@@ -392,10 +430,12 @@ class TranscriptionWorker:
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                creationflags=creationflags_for_job(impact),
+                **popen_platform_kwargs(impact),
             )
         finally:
             log.close()
+        if sys.platform != "win32":
+            apply_priority_to_pid(proc.pid, impact)
 
         if self._job_cancelled(lead.id):
             self._terminate_pid(proc.pid)
@@ -990,7 +1030,17 @@ class TranscriptionWorker:
     def _acquire_lock(self) -> bool:
         """Una sola instancia procesa la cola (el SO libera el lock si morimos)."""
         if sys.platform != "win32":
-            return True
+            import fcntl
+
+            try:
+                self._lock_handle = open(self._store.base / "worker.lock", "w")
+                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                if self._lock_handle:
+                    self._lock_handle.close()
+                    self._lock_handle = None
+                return False
         import msvcrt
 
         try:

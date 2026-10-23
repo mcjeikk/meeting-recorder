@@ -108,12 +108,21 @@ def _is_complete(path: Path) -> bool:
     `.venv`; elegirla solo por tener `transcribe.py` dejaría sin transcripción
     una instalación que funcionaba en cuanto el repo se actualiza (spec 029).
     """
-    return _has_cli(path) and (path / ".venv" / "Scripts" / "python.exe").is_file()
+    from app.core.platform_paths import venv_python
+
+    return _has_cli(path) and venv_python(path / ".venv").is_file()
 
 
 def _transcriptor_candidates(root: Path) -> tuple:
-    """Por orden: la del propio repo; luego las hermanas de instalaciones previas."""
-    return (
+    """Por orden: la del propio repo; luego las hermanas de instalaciones previas.
+
+    En macOS manda el motor que instala la propia app (spec 030): la app
+    empaquetada no tiene repo al lado, y en un clon es la que sabe actualizar.
+    """
+    from app.core.platform_paths import engine_dir, is_macos
+
+    propios = (engine_dir() / "transcriptor",) if is_macos() else ()
+    return propios + (
         root / "transcriptor",                    # dentro del repo (spec 029)
         root.parent / "meeting-transcriber",      # clon aparte (spec 028)
         root.parent / "Transcriptor",             # carpeta de desarrollo
@@ -204,7 +213,9 @@ class RecordingSettings:
 
 # --- Configuración persistente -----------------------------------------------
 def _config_path() -> Path:
-    base = Path(os.environ.get("APPDATA", Path.home())) / "MeetingRecorder"
+    from app.core.platform_paths import config_dir
+
+    base = config_dir()
     base.mkdir(parents=True, exist_ok=True)
     return base / "config.json"
 

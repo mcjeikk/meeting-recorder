@@ -52,21 +52,9 @@ from app.encode.ffmpeg import (
 
 def _make_video_capture(source: VideoSource, fps: int) -> VideoCapture:
     """Crea el backend de captura de video según el sistema operativo y la fuente."""
-    if sys.platform == "win32":
-        # Ventana -> Windows.Graphics.Capture (capta contenido GPU, p. ej. Teams).
-        if source.kind == "window" and source.hwnd:
-            from app.capture.windows_video import WindowsGraphicsCapture
+    from app.capture.sources import make_video_capture
 
-            return WindowsGraphicsCapture(source, fps=fps)
-        # Pantalla completa -> WGC del monitor (GPU; gdigrab por CPU no alcanza
-        # los 30 fps en monitores grandes), con respaldo automático a gdigrab.
-        from app.capture.windows_video import WindowsScreenCapture
-
-        return WindowsScreenCapture(source, fps=fps)
-    raise NotImplementedError(
-        "La captura de video solo está implementada en Windows (Fase 1). "
-        "macOS y Linux están en el roadmap."
-    )
+    return make_video_capture(source, fps)
 
 
 class Recorder:
@@ -252,11 +240,11 @@ class Recorder:
         self._video_segments.append(path)
 
     def _open_system_segment(self) -> None:
-        from app.capture.windows_audio import SystemAudioCapture
+        from app.capture.sources import make_system_audio_capture
 
         assert self._temp_dir is not None
         path = os.path.join(self._temp_dir, f"system_seg{self._cycle}.wav")
-        cap = SystemAudioCapture()
+        cap = make_system_audio_capture()
         cap.start(path)
         self._system_audio = cap
         self._system_segments.append((path, self._cycle))

@@ -23,9 +23,9 @@ PENDING_NAME = "pending_save.json"
 
 def recorder_data_root() -> Path:
     """%LOCALAPPDATA%/MeetingRecorder — fuera de OneDrive y del Temp del sistema."""
-    local = os.environ.get("LOCALAPPDATA")
-    base = Path(local) if local else Path.home() / "AppData" / "Local"
-    root = base / "MeetingRecorder"
+    from app.core.platform_paths import local_dir
+
+    root = local_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

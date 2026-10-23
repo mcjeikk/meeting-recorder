@@ -48,15 +48,17 @@ def transcripts_base() -> Path:
     LOCALAPPDATA (no APPDATA/roaming, no OneDrive): aquí van la cola de trabajos,
     los logs y los WAV temporales — nada de esto debe sincronizarse.
     """
-    local = os.environ.get("LOCALAPPDATA")
-    base = Path(local) if local else Path.home() / "AppData" / "Local"
-    return base / "MeetingRecorder" / "transcripts"
+    from app.core.platform_paths import local_dir
+
+    return local_dir() / "transcripts"
 
 
 def transcriptor_paths(transcriptor_dir: str) -> Tuple[Path, Path]:
-    """(python.exe del venv del Transcriptor, ruta de transcribe.py)."""
+    """(intérprete del venv del Transcriptor, ruta de transcribe.py)."""
+    from app.core.platform_paths import venv_python
+
     root = Path(transcriptor_dir)
-    return root / ".venv" / "Scripts" / "python.exe", root / "transcribe.py"
+    return venv_python(root / ".venv"), root / "transcribe.py"
 
 
 def is_available(transcriptor_dir: Optional[str] = None) -> bool:
@@ -218,6 +220,15 @@ def creationflags_for_job(pc_impact: object = DEFAULT_PC_IMPACT) -> int:
     return NO_WINDOW | priority_class(pc_impact)
 
 
+def popen_platform_kwargs(pc_impact: object = DEFAULT_PC_IMPACT) -> dict:
+    """Windows: sin consola y con su prioridad. POSIX: sesión propia, para que
+    cerrar la app (o su terminal) no le mande señales; la prioridad se aplica
+    después con `apply_priority_to_pid`, que en POSIX es `nice`."""
+    if sys.platform == "win32":
+        return {"creationflags": creationflags_for_job(pc_impact)}
+    return {"start_new_session": True}
+
+
 def _absolute_media(media: Path) -> Path:
     path = Path(media).expanduser()
     try:
@@ -297,7 +308,7 @@ def transcribe(media_path: str, language: Optional[str] = "es") -> str:
     proc = subprocess.run(
         cmd, cwd=cfg.transcriptor_dir, env=subprocess_env(impact),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=creationflags_for_job(impact),
+        **popen_platform_kwargs(impact),
     )
     result = result_dir_for(media, output_base=dest) / "transcripcion.txt"
     if proc.returncode != 0 or not result.exists():

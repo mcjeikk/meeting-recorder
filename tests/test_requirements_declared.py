@@ -24,6 +24,15 @@ DISTRIBUTION_FOR_MODULE = {
     "pyaudiowpatch": "pyaudiowpatch",
     "sounddevice": "sounddevice",
     "windows_capture": "windows-capture",
+    # macOS (spec 030), PyObjC
+    "objc": "pyobjc-core",
+    "Foundation": "pyobjc-framework-cocoa",
+    "AppKit": "pyobjc-framework-cocoa",
+    "Quartz": "pyobjc-framework-quartz",
+    "CoreMedia": "pyobjc-framework-coremedia",
+    "AVFoundation": "pyobjc-framework-avfoundation",
+    "ScreenCaptureKit": "pyobjc-framework-screencapturekit",
+    "libdispatch": "pyobjc-framework-libdispatch",
 }
 
 

@@ -1,5 +1,5 @@
-# Dependencias del Grabador de Reuniones (MVP Windows)
-# ----------------------------------------------------
+# Dependencias del Grabador de Reuniones (Windows y macOS Apple Silicon)
+# ----------------------------------------------------------------------
 # Interfaz gráfica (Qt para Python)
 PySide6>=6.6
 
@@ -27,3 +27,13 @@ opencv-python>=4.8
 # Captura de VENTANA con Windows.Graphics.Capture (capta contenido por GPU, como
 # Teams/Chrome, que con gdigrab salía negro). Trae opencv-python como dependencia.
 windows-capture>=2.0.0 ; sys_platform == "win32"
+
+# macOS (spec 030): pantalla, ventanas y audio del sistema con ScreenCaptureKit,
+# permisos (Quartz / AVFoundation) y la ventana nativa (Cocoa) vía PyObjC.
+pyobjc-core>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-CoreMedia>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-AVFoundation>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-ScreenCaptureKit>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-libdispatch>=10.3 ; sys_platform == "darwin"

@@ -8,6 +8,22 @@ import signal
 import sys
 
 
+def _claim_single_instance_posix(app) -> bool:
+    """macOS/Linux: un QLockFile en la carpeta de datos (se libera si el proceso muere)."""
+    from PySide6.QtCore import QLockFile
+
+    from app.core.platform_paths import local_dir
+
+    folder = local_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(folder / "app.lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(100):
+        return False
+    app._recorder_lock = lock  # noqa: SLF001 — vive con el proceso
+    return True
+
+
 def main() -> int:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
@@ -47,6 +63,16 @@ def main() -> int:
                 "Usa esa; una segunda copia deja la cola de transcripción a medias.",
             )
             return 0
+    elif not _claim_single_instance_posix(app):
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.information(
+            None,
+            "Grabador de Reuniones",
+            "Ya hay una ventana del Grabador abierta.\n"
+            "Usa esa; una segunda copia deja la cola de transcripción a medias.",
+        )
+        return 0
     # Al cerrar la última ventana, salir del proceso.
     app.setQuitOnLastWindowClosed(True)
 

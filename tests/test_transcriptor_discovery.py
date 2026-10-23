@@ -19,15 +19,16 @@ from app.core.config import (
     default_transcriptor_dir,
     resolve_transcriptor_dir,
 )
+from app.core.platform_paths import venv_python
 
 
 def _make_transcriptor(path: Path, with_env: bool = True) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     (path / "transcribe.py").write_text("# cli\n", encoding="utf-8")
     if with_env:
-        scripts = path / ".venv" / "Scripts"
-        scripts.mkdir(parents=True)
-        (scripts / "python.exe").write_bytes(b"")
+        python = venv_python(path / ".venv")
+        python.parent.mkdir(parents=True)
+        python.write_bytes(b"")
     return path
 
 
@@ -128,7 +129,10 @@ class TestLoadHealsTheSavedPath(unittest.TestCase):
                 json.dumps({"output_dir": tmp, "transcriptor_dir": ""}),
                 encoding="utf-8",
             )
-            with patch.dict(os.environ, {"APPDATA": str(appdata)}), patch(
+            with patch(
+                "app.core.platform_paths.config_dir",
+                return_value=appdata / "MeetingRecorder",
+            ), patch(
                 "app.core.config.default_transcriptor_dir",
                 return_value=r"C:\encontrado\transcriptor",
             ):

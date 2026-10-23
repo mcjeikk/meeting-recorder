@@ -9,6 +9,7 @@ dispositivos) y al minimizar la ventana (libera el micrófono).
 """
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Optional
 
@@ -35,6 +36,10 @@ class AudioMonitor:
 
     # --- audio del sistema ---------------------------------------------------
     def _start_system(self) -> None:
+        if sys.platform != "win32":
+            # macOS: el audio del sistema solo llega por ScreenCaptureKit y abrir
+            # un stream solo para el medidor en reposo no compensa (spec 030).
+            return
         try:
             import pyaudiowpatch as pyaudio
 
