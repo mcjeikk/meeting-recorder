@@ -60,7 +60,7 @@ class TestAppend(unittest.TestCase):
         self.log.snapshot(
             {
                 "id": "j1",
-                "media_path": r"C:\videos\Reunión de equipo.mp4",
+                "media_path": str(Path("videos") / "Reunión de equipo.mp4"),
                 "status": "running",
                 "stage": "Identificando hablantes…",
                 "progress": 61,

@@ -94,14 +94,41 @@ def main() -> int:
     if not st.ready:
         return 1
 
+    print("==> CLI del motor (--help)")
+    from app.core.platform_paths import venv_python
+
+    raiz = es.engine_root()
+    ayuda = subprocess.run(
+        [str(venv_python(raiz / ".venv")), "-X", "utf8", str(raiz / "transcribe.py"), "--help"],
+        cwd=str(raiz), capture_output=True, text=True,
+    )
+    print(f"  exit {ayuda.returncode}")
+    if ayuda.returncode != 0:
+        print(ayuda.stdout[-2000:], ayuda.stderr[-4000:])
+        return 1
+
     print("==> Transcripción por el worker (sandbox)")
     with tempfile.TemporaryDirectory(prefix="mac_engine_") as tmp:
         mp4 = make_meeting(Path(tmp))
         cmd = [sys.executable, str(ROOT / "verify_transcription.py"), str(mp4),
                "--quick", "--no-speakers", "--seconds", "15", "--timeout", "1800"]
         code = subprocess.run(cmd, cwd=str(ROOT)).returncode
+    if code != 0:
+        dump_sandbox_logs()
     print("==> Resultado:", "OK" if code == 0 else f"FALLÓ ({code})")
     return code
+
+
+def dump_sandbox_logs() -> None:
+    """verify_transcription conserva el sandbox si falla: mostrar el log del CLI."""
+    base = Path(tempfile.gettempdir())
+    for sandbox in sorted(base.glob("verify_tx_*"), key=lambda p: p.stat().st_mtime)[-1:]:
+        for log in sorted(sandbox.rglob("*.log")):
+            print(f"---- {log.name}")
+            try:
+                print(log.read_text(encoding="utf-8", errors="replace")[-6000:])
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

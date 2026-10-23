@@ -1,6 +1,7 @@
 """Tests for WASAPI loopback helpers and Bluetooth output detection."""
 from __future__ import annotations
 
+import sys
 import unittest
 from unittest.mock import MagicMock
 
@@ -16,6 +17,7 @@ class TestBluetoothName(unittest.TestCase):
         self.assertFalse(is_bluetooth_audio_name(""))
 
 
+@unittest.skipUnless(sys.platform == "win32", "loopback WASAPI: solo Windows (pyaudiowpatch)")
 class TestResolveLoopback(unittest.TestCase):
     def test_exact_name_match(self) -> None:
         pa = MagicMock()
