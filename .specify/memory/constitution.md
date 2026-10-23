@@ -1,5 +1,14 @@
 <!--
-Sync Impact Report
+Sync Impact Report (1.1.0, 2026-10-23)
+- Version change: 1.0.0 → 1.1.0 (MINOR: platform scope expanded)
+- Modified: Product Constraints — macOS on Apple Silicon becomes a supported
+  platform (spec 030), requested explicitly by the user; Windows stays primary.
+  Principle V now names macOS as no longer speculative; Linux still is.
+- Principles I–IV unchanged; they now bind the macOS build too.
+- Templates requiring updates: none.
+- Follow-up TODOs: none
+
+Sync Impact Report (1.0.0)
 - Version change: (template) → 1.0.0
 - Modified principles: placeholders → five concrete principles (see below)
 - Added sections: Product Constraints; Verification & Quality
@@ -51,13 +60,16 @@ spaces and OneDrive; fragile process launching already caused real failures.
 
 Prefer the smallest design that solves a real pain for one primary user.
 Scheduled-task workers, unified mega-venvs, and speculative platforms MUST NOT
-be introduced without an explicit constitution amendment. Rationale: discarded
+be introduced without an explicit constitution amendment. macOS is no longer
+speculative (amendment 1.1.0); Linux still is. Rationale: discarded
 alternatives already proved over-engineered for this scale.
 
 ## Product Constraints
 
-- Primary platform is Windows desktop; macOS/Linux remain roadmap, not blockers
-  for Windows features.
+- Primary platform is Windows desktop. macOS on Apple Silicon is a supported
+  second platform (spec 030): it MUST record and transcribe, and a change that
+  breaks it is a regression. A Windows feature MAY ship before its macOS
+  counterpart if the gap is stated. Linux remains roadmap, not a blocker.
 - Capture quality targets: screen/window video that stays in sync with audio at
   the configured frame rate on large monitors (GPU capture preferred over
   CPU-bound fallbacks when those fallbacks miss the rate).
@@ -88,4 +100,4 @@ principles above. Runtime development guidance lives in `CLAUDE.md` and the
 README; those files MUST NOT contradict this constitution—if they diverge,
 amend one of them explicitly.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-27 | **Last Amended**: 2026-07-27
+**Version**: 1.1.0 | **Ratified**: 2026-07-27 | **Last Amended**: 2026-10-23
