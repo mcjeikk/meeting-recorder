@@ -18,6 +18,7 @@ concurrency:
 
 env:
   PYTHONIOENCODING: utf-8
+  PYTHONUNBUFFERED: "1"
   QT_QPA_PLATFORM: offscreen
   UV_VERSION: "0.13.5"
 

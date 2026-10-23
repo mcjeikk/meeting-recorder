@@ -78,7 +78,9 @@ def _wait(done: threading.Event, timeout: float) -> bool:
     return done.is_set()
 
 
-def _call_async(invoke: Callable[[Callable], None], timeout: float = 10.0) -> tuple:
+def _call_async(
+    invoke: Callable[[Callable], None], timeout: float = 10.0, what: str = "llamada"
+) -> tuple:
     done = threading.Event()
     box: dict = {}
 
@@ -86,9 +88,13 @@ def _call_async(invoke: Callable[[Callable], None], timeout: float = 10.0) -> tu
         box["args"] = args
         done.set()
 
+    t0 = time.monotonic()
     invoke(handler)
     if not _wait(done, timeout):
-        raise TimeoutError("ScreenCaptureKit no respondió a tiempo")
+        _log(f"{what}: sin respuesta en {timeout:.0f} s "
+             f"(hilo {'principal' if threading.current_thread() is threading.main_thread() else 'secundario'})")
+        raise TimeoutError(f"ScreenCaptureKit no respondió a tiempo ({what})")
+    _log(f"{what}: {time.monotonic() - t0:.2f} s")
     return box.get("args", ())
 
 
@@ -106,7 +112,8 @@ def _shareable_content():
     args = _call_async(
         lambda h: SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
             True, True, h
-        )
+        ),
+        what="contenido compartible",
     )
     content = args[0] if args else None
     error = args[1] if len(args) > 1 else None
@@ -345,7 +352,9 @@ class _Stream:
             raise RuntimeError(f"No se pudo preparar la captura ({_error_text(err)})")
 
     def start(self) -> None:
-        args = _call_async(lambda h: self._stream.startCaptureWithCompletionHandler_(h))
+        args = _call_async(
+            lambda h: self._stream.startCaptureWithCompletionHandler_(h), what=f"{self._label} start"
+        )
         err = args[0] if args else None
         if err is not None:
             _log(f"{self._label}: no arrancó: {_error_text(err)}")
@@ -357,7 +366,10 @@ class _Stream:
 
     def stop(self) -> None:
         try:
-            _call_async(lambda h: self._stream.stopCaptureWithCompletionHandler_(h), timeout=5)
+            _call_async(
+                lambda h: self._stream.stopCaptureWithCompletionHandler_(h),
+                timeout=5, what=f"{self._label} stop",
+            )
         except Exception:
             _log_exc("stop stream")
 

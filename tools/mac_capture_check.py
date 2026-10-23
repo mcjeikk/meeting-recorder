@@ -42,7 +42,16 @@ def probe() -> bool:
         [get_ffmpeg_exe(), "-hide_banner", "-encoders"], capture_output=True, text=True
     ).stdout
     vt = "h264_videotoolbox" in encoders
-    print(f"  ffmpeg trae h264_videotoolbox: {'sí' if vt else 'no'} · encoder elegido: {detect_h264_encoder()}")
+    elegido = detect_h264_encoder()
+    print(f"  ffmpeg trae h264_videotoolbox: {'sí' if vt else 'no'} · encoder elegido: {elegido}")
+    if vt and elegido != "h264_videotoolbox":
+        prueba = subprocess.run(
+            [get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=160x120:r=5:d=0.2", "-frames:v", "1",
+             "-c:v", "h264_videotoolbox", "-f", "null", "-"],
+            capture_output=True, text=True,
+        )
+        print(f"  por qué no VideoToolbox: {prueba.stderr.strip()[-300:] or 'sin mensaje'}")
     frame = sources.grab_monitor_frame(1) if monitores else None
     if frame is None:
         print("  fotograma de la pantalla 1: NO llegó")
@@ -109,8 +118,11 @@ def main() -> int:
         if not ok:
             print("Da permiso de «Grabación de pantalla» al proceso que lanza esto y repite.")
         return 0 if ok else 1
-    print("==> Clips reales (verify_pipeline.py)")
-    return subprocess.run([sys.executable, str(ROOT / "verify_pipeline.py")], cwd=str(ROOT)).returncode
+    print("==> Clips reales (verify_pipeline.py)", flush=True)
+    code = subprocess.run([sys.executable, str(ROOT / "verify_pipeline.py")], cwd=str(ROOT)).returncode
+    if code != 0:
+        dump_capture_log()
+    return code
 
 
 if __name__ == "__main__":
