@@ -1,0 +1,7 @@
+# Los scripts de macOS/Linux se rompen con CRLF ("bad interpreter").
+*.sh text eol=lf
+*.spec text eol=lf
+packaging/macos/** text eol=lf
+*.dmg binary
+*.icns binary
+*.ico binary

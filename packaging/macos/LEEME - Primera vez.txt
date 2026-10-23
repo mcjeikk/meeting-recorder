@@ -1,0 +1,42 @@
+GRABADOR DE REUNIONES PARA MAC (Apple Silicon, macOS 13 o posterior)
+====================================================================
+
+1) INSTALAR
+   Arrastra «Grabador de Reuniones» a la carpeta «Aplicaciones».
+
+2) ABRIRLA LA PRIMERA VEZ
+   La app no está firmada por Apple (es gratuita y sin cuenta de desarrollador),
+   así que macOS la bloquea la primera vez. Para abrirla:
+
+   - Ábrela con doble clic. Cuando diga que no se puede verificar, pulsa «OK».
+   - Ve a Ajustes del Sistema → Privacidad y seguridad, baja hasta «Seguridad»
+     y pulsa «Abrir igualmente» junto a «Grabador de Reuniones».
+   - Confirma con tu contraseña. Solo hace falta una vez.
+
+   Alternativa (Terminal):
+       xattr -dr com.apple.quarantine "/Applications/Grabador de Reuniones.app"
+
+3) PERMISOS (al pulsar Grabar por primera vez)
+   - «Grabación de pantalla y audio del sistema»: para la pantalla/ventana y lo
+     que suena en la reunión.
+   - «Micrófono»: para tu voz.
+   Actívalos en Ajustes del Sistema → Privacidad y seguridad y vuelve a abrir la
+   app (macOS a veces solo aplica el permiso al reabrirla).
+   Al instalar una versión nueva, macOS puede volver a pedirlos.
+
+4) TRANSCRIPCIÓN (opcional)
+   La primera vez que pidas transcribir, la app ofrece instalar su motor
+   (~1,5 GB de descarga, una sola vez). Todo corre en tu Mac: tus grabaciones no
+   salen de él.
+   Para identificar QUIÉN habla, pega un token gratuito de Hugging Face en
+   «Hablantes (token)…» y acepta los términos del modelo (la app te guía).
+
+ATAJOS GLOBALES
+   ⌃⌥R  grabar / detener
+   ⌃⌥P  pausar / reanudar
+   ⌃⌥M  silenciar / activar el micrófono
+
+DÓNDE QUEDAN LAS COSAS
+   Grabaciones:   la carpeta que elijas (por defecto, Películas/Grabaciones)
+   Datos y motor: ~/Library/Application Support/MeetingRecorder
+   Registros:     ~/Library/Application Support/MeetingRecorder/logs

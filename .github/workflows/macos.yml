@@ -1,0 +1,99 @@
+# macOS Apple Silicon (spec 030): pruebas, .app/.dmg y motor de transcripción.
+# El .dmg queda como artefacto en cada ejecución y, con un tag v*, en un Release.
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+  QT_QPA_PLATFORM: offscreen
+  UV_VERSION: "0.13.5"
+
+jobs:
+  app:
+    name: App (pruebas + .dmg)
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencias de la app
+        run: python -m pip install -r requirements.txt
+
+      - name: Pruebas de la app
+        run: python -m unittest discover -s tests -t .
+
+      - name: Sonda de captura (el runner no tiene permiso de pantalla; informativa)
+        continue-on-error: true
+        run: python tools/mac_capture_check.py --probe-only
+
+      - name: Construir .app y .dmg
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export MR_VERSION="${GITHUB_REF_NAME#v}"; fi
+          PYTHON=python bash packaging/macos/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GrabadorDeReuniones-macos-arm64
+          path: dist/*.dmg
+          retention-days: 30
+          if-no-files-found: error
+
+  engine:
+    name: Motor (instalación al primer uso + transcripción)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencias de la app + uv
+        run: python -m pip install -r requirements.txt "uv==$UV_VERSION"
+
+      - name: Instalar el motor y transcribir una reunión de prueba
+        run: |
+          export MR_UV="$(python -c 'import uv; print(uv.find_uv_bin())')"
+          python tools/mac_engine_check.py
+
+      - name: Registro de la instalación
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-setup-log
+          path: ~/Library/Application Support/MeetingRecorder/engine/setup.log
+          if-no-files-found: ignore
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [app, engine]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: GrabadorDeReuniones-macos-arm64
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -67,8 +68,11 @@ def recording_stem(source: "VideoSource", when: Optional[datetime] = None) -> st
 
 
 def default_output_dir() -> Path:
-    """Carpeta de salida por defecto: ~/Videos/Grabaciones (o ~/Grabaciones)."""
-    videos = Path.home() / "Videos"
+    """Carpeta de salida por defecto: ~/Videos/Grabaciones (o ~/Grabaciones).
+
+    En macOS la carpeta de vídeos es ~/Movies («Películas» en el Finder).
+    """
+    videos = Path.home() / ("Movies" if sys.platform == "darwin" else "Videos")
     base = videos if videos.exists() else Path.home()
     out = base / "Grabaciones"
     return out

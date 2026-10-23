@@ -44,7 +44,7 @@ LOCK_MACOS13 = "requirements.lock.macos13.txt"
 VERIFY_IMPORTS = "import ctranslate2, faster_whisper, torch, pyannote.audio; print('motor ok')"
 
 _COPY_IGNORE = shutil.ignore_patterns(
-    ".venv", ".venv.*", ".env", "__pycache__", "*.pyc", "tests", "salida", "output*"
+    ".venv", ".venv.*", ".env", "__pycache__", "*.pyc", "tests", "salida", "input", "output*"
 )
 
 
