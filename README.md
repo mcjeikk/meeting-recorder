@@ -8,7 +8,32 @@ Aplicación de escritorio para **grabar reuniones** (Teams, navegadores y cualqu
 
 El resultado es un archivo **MP4** con **pistas de audio separadas** (sistema y micrófono) más una **pista mezclada** que se reproduce normal en cualquier reproductor. Y si activas la casilla **"Transcribir al terminar"** *(opcional)*, la app genera automáticamente la **transcripción con identificación de hablantes** con el motor que viene en la carpeta **`transcriptor\`** (100 % local; el audio nunca sale de tu equipo). Tiene su propio entorno y se instala aparte (paso B); sin él, la grabación funciona igual: solo no se genera la transcripción.
 
-> **Estado actual:** Windows con grabación + transcripción automática funcionando. macOS y Linux están planificados (ver `Roadmap`).
+> **Estado actual:** Windows con grabación + transcripción automática funcionando.
+> **macOS (Apple Silicon, 13+)** con instalador `.dmg` (ver *🍎 macOS*). Linux, planificado.
+
+---
+
+## 🍎 macOS (Apple Silicon)
+
+1. Descarga `GrabadorDeReuniones-<versión>-macos-arm64.dmg` de
+   [Releases](https://github.com/mcjeikk/meeting-recorder/releases) (o el artefacto
+   de la última ejecución de *Actions → macOS*).
+2. Ábrelo y arrastra **Grabador de Reuniones** a **Aplicaciones**.
+3. La app no está firmada por Apple: la primera vez macOS la bloquea. Ve a
+   **Ajustes del Sistema → Privacidad y seguridad → «Abrir igualmente»**
+   (o en Terminal: `xattr -dr com.apple.quarantine "/Applications/Grabador de Reuniones.app"`).
+4. Al pulsar **Grabar** pide **Grabación de pantalla** (pantalla, ventana y audio del
+   sistema) y **Micrófono**. Actívalos y vuelve a abrir la app.
+5. **Transcribir** es opcional: la primera vez la app ofrece instalar su motor
+   (~1,5 GB, una vez, en `~/Library/Application Support/MeetingRecorder/engine`).
+   Para identificar hablantes, pega tu token de Hugging Face en **«Hablantes (token)…»**.
+
+Atajos globales: **⌃⌥R** grabar/detener, **⌃⌥P** pausar, **⌃⌥M** silenciar el micrófono.
+En Mac no hay auto-silencio por llamada ni aviso de Bluetooth (dependen de Windows), y el
+medidor del audio del sistema solo se mueve mientras se graba.
+
+Compilar el `.dmg` uno mismo (en un Mac Apple Silicon con Python 3.11):
+`bash packaging/macos/build.sh`. Diagnóstico de captura: `python tools/mac_capture_check.py`.
 
 ---
 
@@ -305,9 +330,10 @@ python verify_transcription.py "ruta.mp4" --force     # transcribir una concreta
   (subproceso + cola persistente; ver sección *Transcripción automática*). Desde
   sep-2026 vive en este mismo repositorio (`transcriptor\`); el repo
   `meeting-transcriber` quedó archivado.
-- **Fase 3:** **macOS** (ScreenCaptureKit).
+- **Fase 3 ✅ (oct-2026, spec 030):** **macOS** Apple Silicon (ScreenCaptureKit),
+  `.dmg` sin firmar construido por GitHub Actions y motor de transcripción al primer uso.
 - **Fase 4:** **Linux** (PipeWire + xdg-desktop-portal).
-- **Fase 5:** Empaquetado e instaladores firmados.
+- **Fase 5:** Instaladores firmados (Windows y notarización en macOS).
 
 ---
 

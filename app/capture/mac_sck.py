@@ -34,6 +34,7 @@ _BGRA = 1111970369  # kCVPixelFormatType_32BGRA ('BGRA')
 _NON_INTERLEAVED = 1 << 5  # kAudioFormatFlagIsNonInterleaved
 _MAX_LONG_SIDE = 2560
 _AUDIO_RATE = 48_000
+_START_ATTEMPTS = 2
 _AUDIO_CHANNELS = 2
 
 # Si la ventana de la app se excluye de lo que se graba (casilla de la UI).
@@ -353,7 +354,8 @@ class _Stream:
 
     def start(self) -> None:
         args = _call_async(
-            lambda h: self._stream.startCaptureWithCompletionHandler_(h), what=f"{self._label} start"
+            lambda h: self._stream.startCaptureWithCompletionHandler_(h),
+            timeout=6, what=f"{self._label} start",
         )
         err = args[0] if args else None
         if err is not None:
@@ -471,16 +473,26 @@ class SCKVideoCapture(VideoCapture):
 
         from app.capture.frame_pipe import FramePipeWriter
 
-        filtro, ancho, alto = _filter_and_size(self._source)
-        _log(f"video: {self._source.kind} {ancho}x{alto} @ {self._fps} fps")
-        config = _configuration(ancho, alto, self._fps, audio=False)
-        self._stream = _Stream(filtro, config, int(SCK.SCStreamOutputTypeScreen), self._on_sample, "mr.video")
-        self._stream.start()
-        if not _wait(self._first, 6):
-            motivo = self._stream.stopped_error()
+        motivo = None
+        for intento in range(1, _START_ATTEMPTS + 1):
+            filtro, ancho, alto = _filter_and_size(self._source)
+            _log(f"video: {self._source.kind} {ancho}x{alto} @ {self._fps} fps (intento {intento})")
+            config = _configuration(ancho, alto, self._fps, audio=False)
+            self._stream = _Stream(filtro, config, int(SCK.SCStreamOutputTypeScreen), self._on_sample, "mr.video")
+            try:
+                self._stream.start()
+                if _wait(self._first, 6):
+                    break
+                motivo = self._stream.stopped_error() or "sin primer fotograma en 6 s"
+            except TimeoutError as e:
+                # En frío macOS a veces corta la conexión del primer stream
+                # ("application connection being interrupted"): se reintenta.
+                motivo = self._stream.stopped_error() or str(e)
             self._stream.stop()
             self._stream = None
-            _log(f"video: sin primer fotograma en 6 s ({motivo or 'sin error de macOS'})")
+            _log(f"video: intento {intento} falló ({motivo})")
+            time.sleep(0.5)
+        else:
             raise RuntimeError(
                 "La pantalla no entregó imagen. Revisa el permiso de Grabación de "
                 "pantalla (Ajustes del Sistema → Privacidad y seguridad)."
@@ -562,15 +574,27 @@ class SCKSystemAudioCapture(AudioCapture):
         with self._lock:
             self._wave = w
             self._gaps = GapFiller(_AUDIO_RATE, host_now())
-        try:
-            self._stream = _Stream(filtro, config, int(SCK.SCStreamOutputTypeAudio), self._on_sample, "mr.audio")
-            self._stream.start()
-        except Exception:
-            with self._lock:
-                self._wave = None
-                self._gaps = None
-            w.close()
-            raise
+        error: Optional[Exception] = None
+        for intento in range(1, _START_ATTEMPTS + 1):
+            try:
+                self._stream = _Stream(filtro, config, int(SCK.SCStreamOutputTypeAudio), self._on_sample, "mr.audio")
+                self._stream.start()
+                return
+            except TimeoutError as e:
+                error = e
+                _log(f"audio: intento {intento} sin respuesta; se reintenta")
+                if self._stream is not None:
+                    self._stream.stop()
+                    self._stream = None
+                time.sleep(0.5)
+            except Exception as e:  # noqa: BLE001
+                error = e
+                break
+        with self._lock:
+            self._wave = None
+            self._gaps = None
+        w.close()
+        raise error or RuntimeError("No se pudo iniciar el audio del sistema")
 
     def stop(self) -> None:
         if self._stream is not None:

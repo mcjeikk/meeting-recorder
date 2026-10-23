@@ -31,6 +31,14 @@ def _resize_nearest(frame: np.ndarray, w: int, h: int) -> np.ndarray:
         return frame[filas][:, cols]
 
 
+def frames_due(elapsed: float, fps: int) -> int:
+    """Fotogramas que debería tener el video tras `elapsed` segundos (el primero
+    sale en t=0)."""
+    if elapsed < 0:
+        return 0
+    return int(elapsed * fps) + 1
+
+
 class FramePipeWriter:
     """Escribe el último fotograma a un MKV H.264 a `fps` constantes."""
 
@@ -44,6 +52,7 @@ class FramePipeWriter:
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._stop_at: Optional[float] = None
 
     def put(self, frame: np.ndarray) -> None:
         with self._lock:
@@ -73,29 +82,38 @@ class FramePipeWriter:
         self._thread.start()
 
     def _loop(self) -> None:
-        interval = 1.0 / self._fps
-        next_t = time.perf_counter()
-        while self._running and self._proc is not None:
+        """Cuenta fotogramas contra el reloj: si ffmpeg se atrasa (encoder por
+        software, CPU ocupada) se repite el último para ponerse al día. Saltarlos
+        acortaría el video frente al audio y se desincronizaría la reunión."""
+        t0 = time.perf_counter()
+        escritos = 0
+        while self._proc is not None:
+            fin = self._stop_at
+            ahora = time.perf_counter() if fin is None else fin
+            debidos = frames_due(ahora - t0, self._fps)
             with self._lock:
                 frame = self._latest
-            if frame is not None:
+            if frame is not None and escritos < debidos:
                 if frame.shape[0] != self._h or frame.shape[1] != self._w:
                     frame = _resize_nearest(frame, self._w, self._h)
+                datos = np.ascontiguousarray(frame).tobytes()
                 try:
-                    self._proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+                    while escritos < debidos:
+                        self._proc.stdin.write(datos)
+                        escritos += 1
                 except Exception:
                     break
-            next_t += interval
-            delay = next_t - time.perf_counter()
-            if delay > 0:
-                time.sleep(delay)
-            else:
-                next_t = time.perf_counter()
+            if fin is not None:
+                break
+            espera = t0 + escritos / self._fps - time.perf_counter()
+            if espera > 0:
+                time.sleep(min(espera, 0.05))
 
     def stop(self) -> None:
+        self._stop_at = time.perf_counter()
         self._running = False
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=15)
             self._thread = None
         proc, self._proc = self._proc, None
         if proc is None:
