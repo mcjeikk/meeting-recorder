@@ -36,6 +36,13 @@ def probe() -> bool:
         print(f"    🖥  {m.label}")
     for w in ventanas[:8]:
         print(f"    🪟  {w.title}")
+    from app.encode.ffmpeg import detect_h264_encoder, get_ffmpeg_exe
+
+    encoders = subprocess.run(
+        [get_ffmpeg_exe(), "-hide_banner", "-encoders"], capture_output=True, text=True
+    ).stdout
+    vt = "h264_videotoolbox" in encoders
+    print(f"  ffmpeg trae h264_videotoolbox: {'sí' if vt else 'no'} · encoder elegido: {detect_h264_encoder()}")
     frame = sources.grab_monitor_frame(1) if monitores else None
     if frame is None:
         print("  fotograma de la pantalla 1: NO llegó")

@@ -39,9 +39,8 @@ jobs:
       - name: Pruebas de la app
         run: python -X faulthandler -m unittest discover -s tests -t . -v
 
-      - name: Sonda de captura (el runner no tiene permiso de pantalla; informativa)
-        continue-on-error: true
-        run: python tools/mac_capture_check.py --probe-only
+      - name: Captura real (ScreenCaptureKit + mux) con clips de verdad
+        run: python tools/mac_capture_check.py
 
       - name: Construir .app y .dmg
         run: |
