@@ -106,36 +106,10 @@ def _error_text(err) -> str:
         return str(err)
 
 
-_window_server_ready = False
-
-
-def _ensure_window_server() -> None:
-    """ScreenCaptureKit necesita que el proceso ya hable con el WindowServer.
-    Sin eso (proceso sin NSApplication ni llamadas a CoreGraphics: Qt offscreen,
-    scripts) macOS corta cada stream con «application connection being
-    interrupted» y deja colgado el contenido compartible."""
-    global _window_server_ready
-    if _window_server_ready:
-        return
-    try:
-        import Quartz
-
-        Quartz.CGMainDisplayID()
-        Quartz.CGPreflightScreenCaptureAccess()
-        if threading.current_thread() is threading.main_thread():
-            from AppKit import NSApplication
-
-            NSApplication.sharedApplication()
-        _window_server_ready = True
-    except Exception:
-        _log_exc("conexión con el WindowServer")
-
-
 # --- contenido compartible --------------------------------------------------------
 def _shareable_content():
     import ScreenCaptureKit as SCK
 
-    _ensure_window_server()
     args = _call_async(
         lambda h: SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
             True, True, h
