@@ -108,7 +108,11 @@ def dump_capture_log() -> None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--probe-only", action="store_true")
+    p.add_argument("--dump-log", action="store_true", help="solo imprime mac_capture.log")
     args = p.parse_args()
+    if args.dump_log:
+        dump_capture_log()
+        return 0
     if sys.platform != "darwin":
         print("Este diagnóstico es para macOS.")
         return 2

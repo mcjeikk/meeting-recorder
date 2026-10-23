@@ -40,8 +40,12 @@ jobs:
       - name: Pruebas de la app
         run: python -X faulthandler -m unittest discover -s tests -t . -v
 
-      - name: Captura real (ScreenCaptureKit + mux) con clips de verdad
-        run: python tools/mac_capture_check.py
+      - name: Captura real - diagnóstico ScreenCaptureKit
+        run: python tools/mac_capture_check.py --probe-only
+
+      - name: Captura real - orquestador + mux con clips de verdad
+        run: |
+          python verify_pipeline.py || { python tools/mac_capture_check.py --dump-log; exit 1; }
 
       - name: Construir .app y .dmg
         run: |
