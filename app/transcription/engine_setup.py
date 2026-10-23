@@ -43,9 +43,25 @@ LOCK_MACOS = "requirements.lock.macos.txt"
 LOCK_MACOS13 = "requirements.lock.macos13.txt"
 VERIFY_IMPORTS = "import ctranslate2, faster_whisper, torch, pyannote.audio; print('motor ok')"
 
-_COPY_IGNORE = shutil.ignore_patterns(
-    ".venv", ".venv.*", ".env", "__pycache__", "*.pyc", "tests", "salida", "input", "output*"
-)
+_ROOT_ONLY_SKIP = {".env", "tests", "salida", "input", "output"}
+
+
+def _copy_ignore(root_dir: Path):
+    """Qué no copiar al motor. Las carpetas de datos se excluyen SOLO en la raíz:
+    un patrón global se llevaría por delante `pipeline/output.py`."""
+    raiz = os.path.normcase(os.path.abspath(root_dir))
+
+    def _ignore(carpeta: str, nombres: List[str]) -> List[str]:
+        en_raiz = os.path.normcase(os.path.abspath(carpeta)) == raiz
+        fuera = []
+        for n in nombres:
+            if n == "__pycache__" or n.endswith(".pyc") or n.startswith(".venv"):
+                fuera.append(n)
+            elif en_raiz and n in _ROOT_ONLY_SKIP:
+                fuera.append(n)
+        return fuera
+
+    return _ignore
 
 
 # --- ubicaciones ---------------------------------------------------------------------
@@ -190,7 +206,7 @@ def sync_sources(source: Optional[Path] = None, dest: Optional[Path] = None) -> 
     if not (src / "transcribe.py").exists():
         return False
     dst.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, ignore=_COPY_IGNORE, dirs_exist_ok=True)
+    shutil.copytree(src, dst, ignore=_copy_ignore(src), dirs_exist_ok=True)
     return True
 
 

@@ -115,6 +115,28 @@ class DiskTests(unittest.TestCase):
         self.assertTrue((dst / ".venv" / "marca").exists())
         self.assertEqual((dst / ".env").read_text(encoding="utf-8"), "HUGGINGFACE_TOKEN=del_usuario")
 
+    def test_sync_sources_keeps_modules_named_like_data_folders(self):
+        # Un patrón global "output*" se saltaba pipeline/output.py (CI macOS).
+        src = self.root / "src"
+        (src / "pipeline").mkdir(parents=True)
+        (src / "output").mkdir()
+        (src / "transcribe.py").write_text("x", encoding="utf-8")
+        (src / "pipeline" / "output.py").write_text("x", encoding="utf-8")
+        (src / "pipeline" / "input.py").write_text("x", encoding="utf-8")
+        (src / "output" / "reunion.txt").write_text("x", encoding="utf-8")
+        dst = self.root / "dst"
+        es.sync_sources(src, dst)
+        self.assertTrue((dst / "pipeline" / "output.py").exists())
+        self.assertTrue((dst / "pipeline" / "input.py").exists())
+        self.assertFalse((dst / "output").exists())
+
+    def test_sync_copies_the_real_transcriptor_completely(self):
+        src = es.bundled_source_dir()
+        dst = self.root / "motor"
+        es.sync_sources(src, dst)
+        for py in (src / "pipeline").glob("*.py"):
+            self.assertTrue((dst / "pipeline" / py.name).exists(), py.name)
+
     def test_sync_sources_without_cli_does_nothing(self):
         self.assertFalse(es.sync_sources(self.root / "vacio", self.root / "dst"))
         self.assertFalse((self.root / "dst").exists())
