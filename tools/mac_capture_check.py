@@ -48,7 +48,52 @@ def probe() -> bool:
         print("  fotograma de la pantalla 1: NO llegó")
         return False
     print(f"  fotograma de la pantalla 1: {frame.shape[1]}×{frame.shape[0]}")
-    return pantalla
+    return pantalla and record_probe(monitores[0])
+
+
+def record_probe(source) -> bool:
+    """3 s de video y de audio del sistema con los backends reales, sin orquestador."""
+    import tempfile
+    import time
+
+    from app.capture.mac_sck import SCKSystemAudioCapture, SCKVideoCapture
+
+    ok = True
+    with tempfile.TemporaryDirectory(prefix="mac_cap_") as tmp:
+        video = Path(tmp) / "v.mkv"
+        audio = Path(tmp) / "a.wav"
+        cap, aud = SCKVideoCapture(source, fps=30), SCKSystemAudioCapture()
+        try:
+            t0 = time.monotonic()
+            cap.start(str(video))
+            print(f"  video: arrancó en {time.monotonic() - t0:.1f} s")
+            aud.start(str(audio))
+            time.sleep(3)
+        except Exception as e:  # noqa: BLE001
+            print(f"  grabación directa FALLÓ: {e}")
+            ok = False
+        finally:
+            for c in (aud, cap):
+                try:
+                    c.stop()
+                except Exception as e:  # noqa: BLE001
+                    print(f"  al detener: {e}")
+        for p in (video, audio):
+            tam = p.stat().st_size if p.exists() else 0
+            print(f"  {p.name}: {tam} bytes")
+            ok = ok and tam > 0
+    if not ok:
+        dump_capture_log()
+    return ok
+
+
+def dump_capture_log() -> None:
+    from app.core.platform_paths import local_dir
+
+    log = local_dir() / "logs" / "mac_capture.log"
+    if log.exists():
+        print(f"---- {log}")
+        print(log.read_text(encoding="utf-8", errors="replace")[-5000:])
 
 
 def main() -> int:

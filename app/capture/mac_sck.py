@@ -285,6 +285,34 @@ def _output_class():
 
 
 _OUTPUT_CLASS = None
+_DELEGATE_CLASS = None
+
+
+def _delegate_class():
+    """Delegado que anota por qué macOS detuvo un stream (si no, se pierde)."""
+    global _DELEGATE_CLASS
+    if _DELEGATE_CLASS is not None:
+        return _DELEGATE_CLASS
+    import objc
+    from Foundation import NSObject
+
+    protocolo = objc.protocolNamed("SCStreamDelegate")
+
+    class MRStreamDelegate(NSObject, protocols=[protocolo]):
+        def initWithLabel_(self, label):
+            self = objc.super(MRStreamDelegate, self).init()
+            if self is None:
+                return None
+            self._label = str(label)
+            self.stopped_error = None
+            return self
+
+        def stream_didStopWithError_(self, stream, error):
+            self.stopped_error = _error_text(error)
+            _log(f"{self._label}: macOS detuvo el stream: {self.stopped_error}")
+
+    _DELEGATE_CLASS = MRStreamDelegate
+    return _DELEGATE_CLASS
 
 
 def _sample_queue(label: str):
@@ -302,7 +330,11 @@ class _Stream:
     def __init__(self, filtro, config, output_type: int, callback, label: str):
         import ScreenCaptureKit as SCK
 
-        self._stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(filtro, config, None)
+        self._label = label
+        self._delegate = _delegate_class().alloc().initWithLabel_(label)
+        self._stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(
+            filtro, config, self._delegate
+        )
         self._output = _output_class().alloc().initWithCallback_(callback)
         resultado = self._stream.addStreamOutput_type_sampleHandlerQueue_error_(
             self._output, output_type, _sample_queue(label), None
@@ -316,7 +348,12 @@ class _Stream:
         args = _call_async(lambda h: self._stream.startCaptureWithCompletionHandler_(h))
         err = args[0] if args else None
         if err is not None:
+            _log(f"{self._label}: no arrancó: {_error_text(err)}")
             raise RuntimeError(f"macOS no inició la captura: {_error_text(err)}")
+        _log(f"{self._label}: arrancó")
+
+    def stopped_error(self) -> Optional[str]:
+        return getattr(self._delegate, "stopped_error", None)
 
     def stop(self) -> None:
         try:
@@ -423,15 +460,19 @@ class SCKVideoCapture(VideoCapture):
         from app.capture.frame_pipe import FramePipeWriter
 
         filtro, ancho, alto = _filter_and_size(self._source)
+        _log(f"video: {self._source.kind} {ancho}x{alto} @ {self._fps} fps")
         config = _configuration(ancho, alto, self._fps, audio=False)
         self._stream = _Stream(filtro, config, int(SCK.SCStreamOutputTypeScreen), self._on_sample, "mr.video")
         self._stream.start()
-        if not self._first.wait(timeout=6):
+        if not _wait(self._first, 6):
+            motivo = self._stream.stopped_error()
             self._stream.stop()
             self._stream = None
+            _log(f"video: sin primer fotograma en 6 s ({motivo or 'sin error de macOS'})")
             raise RuntimeError(
                 "La pantalla no entregó imagen. Revisa el permiso de Grabación de "
                 "pantalla (Ajustes del Sistema → Privacidad y seguridad)."
+                + (f" Detalle: {motivo}" if motivo else "")
             )
         alto_real, ancho_real = self._latest.shape[:2]
         self._writer = FramePipeWriter(output_path, ancho_real, alto_real, self._fps)
