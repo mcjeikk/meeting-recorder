@@ -53,6 +53,13 @@ def wait_for(app, predicate, label, timeout=30):
 def control(window, name):
     item = window.view.rootObject().findChild(QQuickItem, name)
     if item is None:
+        pending = [window.view.rootObject()]
+        while pending:
+            node = pending.pop()
+            if node.objectName() == name:
+                return node
+            pending.extend(node.childItems())
+    if item is None:
         raise RuntimeError(f"No se encontró {name}")
     return item
 
