@@ -120,6 +120,14 @@ def run(output):
     state = output / "estado"
     state.mkdir(exist_ok=True)
     title = "Recorder QA " + uuid.uuid4().hex[:10]
+
+    def fixture_source():
+        if child.poll() is not None:
+            raise RuntimeError(f"La ventana de prueba terminó antes de capturarla ({child.returncode})")
+        # ScreenCaptureKit muestra «Aplicación — Título» en el selector de macOS.
+        return next((source for source in sources.list_windows()
+                     if source.title == title or source.title.endswith(" — " + title)), None)
+
     frozen = getattr(sys, "frozen", False)
     launch = [sys.executable] if frozen else [sys.executable, str(Path(__file__).resolve())]
     child = subprocess.Popen([*launch, "--frontend-fixture", title], cwd=str(output))
@@ -141,14 +149,19 @@ def run(output):
                 win = MainWindow()
                 win.setAttribute(Qt.WA_ShowWithoutActivating)
                 win.show()
-                wait_for(app, lambda: any(w.title == title for w in sources.list_windows()), "ventana de prueba")
+                if sys.platform == "darwin":
+                    from app.core.mac_permissions import screen_allowed
+                    if not screen_allowed(request=False):
+                        raise RuntimeError("El grabador de prueba necesita el permiso de grabación de pantalla de macOS")
+                wait_for(app, fixture_source, "ventana de prueba")
+                window_id = fixture_source().hwnd
                 win.picker.refresh()
-                index = next(i for i, w in enumerate(win.picker.items) if w.title == title)
+                index = next(i for i, w in enumerate(win.picker.items) if w.kind == "window" and w.hwnd == window_id)
                 win.picker.select(index)
             win.preview.refresh()
             app.processEvents()
             source = win.picker.selected
-            assert source.title == title and source.hwnd
+            assert source.kind == "window" and source.hwnd == window_id
             if sys.platform == "win32":
                 import ctypes
                 from ctypes import wintypes
