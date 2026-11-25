@@ -1,6 +1,6 @@
 # Contexto para sesiones de desarrollo (Claude Code)
 
-App de escritorio Windows (PySide6) que graba reuniones (video + audio del sistema
+App de escritorio para Windows y macOS Apple Silicon, con pantallas QML y un motor Python que graba reuniones (video + audio del sistema
 + micrófono → MP4 multipista) y las transcribe automáticamente con el
 **Transcriptor** (faster-whisper + pyannote), que desde la spec 029 (sep-2026) vive
 en **`transcriptor\` de este mismo repo**, con su historial y **su propio `.venv`**.
@@ -95,21 +95,19 @@ El README cubre el uso; este archivo documenta lo que NO es obvio desde el códi
 - **mpdecimate sobre pantalla estática da pocos frames únicos POR DISEÑO** (WGC solo
   emite callbacks cuando el contenido cambia): para medir frescura de captura, poner
   una animación en pantalla (p. ej. `ffplay -f lavfi testsrc2`).
-- **Tests headless de UI**: construir `MainWindow` SIN `show()` (show arranca el
-  AudioMonitor que abre dispositivos reales) con `QT_QPA_PLATFORM=offscreen` y
-  `PYTHONIOENCODING=utf-8`. Combos: `StrongFocus` + `scroll_guard` (la rueda no
-  muta un desplegable sin foco; si no, el scroll de la ventana cambia calidad/mic).
-- **UI = paneles oscuros + Grabar verde** (`app/ui/main_window.py`, `_STYLE`):
-  GroupBoxes numerados, botón ● Grabar / ■ Detener. Combos: `StrongFocus` +
-  `scroll_guard` (la rueda no muta un desplegable sin foco).
-- **Callbacks del Recorder corren en hilos daemon**, no en el hilo Qt: todo pasa
-  por señales (`_tx_update_sig`, etc.). El encolado en `_on_finished` debe ocurrir
-  ANTES del check de `_quit_after_finalize` (la app puede morir justo después).
+- **Pruebas de interfaz.** Usar `tests/qml_window.py` con `QT_QPA_PLATFORM=offscreen` y
+  `PYTHONIOENCODING=utf-8`. La ventana usa dispositivos simulados y una cola temporal.
+- **Interfaz de la spec 032.** Grabar, Transcripciones y Ajustes están en `app/ui/qml/`.
+  Se conservan el panel oscuro y Grabar verde. Los controles de sesión quedan fijos.
+  Los desplegables responden a la rueda cuando tienen el foco.
+- **Callbacks del grabador.** Los hilos notifican al hilo de Qt mediante señales de
+  `RecordingSession`. El encolado en `MainWindow._on_saved` precede al cierre para
+  que la cola persistente recuerde el trabajo al volver a abrir el grabador.
 
 ## macOS (spec 030, oct-2026)
 
 Apple Silicon, macOS 13+, `.dmg` sin firmar (ad-hoc) que construye
-`.github/workflows/macos.yml` en `macos-14` (no hace falta un Mac para compilar).
+`.github/workflows/macos.yml` en `macos-15` con Apple Silicon.
 El motor NO viaja en el `.dmg`: `engine_setup.py` lo instala al primer uso con
 el `uv` empaquetado en `~/Library/Application Support/MeetingRecorder/engine`
 (en CI tarda ~36 s). El token HF va a `<motor>/transcriptor/.env` (modo 600);

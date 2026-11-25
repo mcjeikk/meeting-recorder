@@ -1,6 +1,6 @@
 # Interfaz de grabación
 
-**Spec Kit 032 · En verificación · 25 de noviembre de 2026**
+**Spec Kit 032 · Implementada y verificada · 25 de noviembre de 2026**
 
 ## Escenarios de usuario
 

@@ -1,9 +1,9 @@
 # Plan para cambiar la interfaz del grabador
 
-**Spec Kit 032 · En verificación · 25 de noviembre de 2026**
+**Spec Kit 032 · Entregas verificadas · 25 de noviembre de 2026**
 [Comportamiento y criterios de aceptación](./spec.md)
 
-**Decisión propuesta.** Usar QML para las pantallas y Python para grabar y transcribir. El ensayo local en Windows confirmó que un botón QML puede silenciar el micrófono en `Recorder` y mostrar el nuevo estado.
+Las pantallas están implementadas en QML. Python gestiona la grabación, la transcripción y la integración con el escritorio. Las pruebas de ambas entregas están registradas en la [lista de tareas](./tasks.md).
 
 ## Primera entrega · Grabar una reunión de principio a fin
 

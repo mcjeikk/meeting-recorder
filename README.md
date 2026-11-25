@@ -155,7 +155,7 @@ La pestaña **Grabar** reúne la fuente, la vista previa y los dos medidores. El
    **Puedes cambiar de micrófono o pulsar Silenciar durante la grabación.**
    - **Indicador de reunión**: la app detecta si **Teams/Zoom/Meet u otra app está
      usando el micrófono** (igual que el ícono junto al reloj) y lo muestra.
-   - Opción **experimental**: *"Auto-silenciar fuera de llamada (experimental)"*
+   - Opción **experimental** en Ajustes, *Silenciar el micrófono fuera de las llamadas*
      — silencia **tu pista de grabación** cuando Windows no ve ninguna app de
      reunión usando el mic; la reactiva al detectar llamada. Solo actúa al
      **entrar/salir** de llamada (un mute manual durante la llamada se respeta

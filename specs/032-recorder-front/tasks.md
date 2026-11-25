@@ -7,12 +7,12 @@
 - [x] T003 [FR-001, FR-003, FR-005] Extraer el controlador de la sesión que usarán QML y los atajos. Cubrir inicio, pausa, reanudación, guardado, error y recuperación.
 - [x] T004 [FR-001, FR-003] Integrar la pantalla Grabar en QML con fuente, vista previa, niveles de audio y controles fijos. Verificar el selector con las pruebas de la especificación 031.
 - [x] T005 [FR-001, FR-005] Probar el recorrido completo con una fuente controlada, el MP4, sus pistas, la vista de 480 × 720, el tamaño mínimo, el teclado y la exclusión de captura.
-- [ ] T006 [FR-005, FR-006] Alinear las dependencias por plataforma de `pyproject.toml` y `requirements.txt` y comprobar que una prueba detecta futuras omisiones. En Windows instalar por separado con `pip install .` y `pip install -r requirements.txt` en entornos limpios. Incluir los módulos y recursos de QML en el paquete macOS. Comprobar que ambas instalaciones de Windows y la aplicación empaquetada en Mac permiten abrir el grabador y guardar un clip de prueba.
+- [x] T006 [FR-005, FR-006] Alinear las dependencias por plataforma de `pyproject.toml` y `requirements.txt` y comprobar que una prueba detecta futuras omisiones. En Windows instalar por separado con `pip install .` y `pip install -r requirements.txt` en entornos limpios. Incluir los módulos y recursos de QML en el paquete macOS. Comprobar que ambas instalaciones de Windows y la aplicación empaquetada en Mac permiten abrir el grabador y guardar un clip de prueba.
 
 ## Segunda entrega
 
 - [x] T007 [FR-004, FR-005] Implementar las vistas Transcripciones y Ajustes, reutilizar la cola local y las preferencias existentes y sustituir las dos llamadas a `os.startfile` por apertura local multiplataforma.
-- [ ] T008 [FR-001 a FR-006] Verificar importación, transcripción de muestra, apertura de la carpeta de resultados y del registro en Windows y Mac, recuperación del guardado y las suites de ambos entornos.
+- [x] T008 [FR-001 a FR-006] Verificar importación, transcripción de muestra, apertura de la carpeta de resultados y del registro en Windows y Mac, recuperación del guardado y las suites de ambos entornos.
 
 ## Orden
 
@@ -27,3 +27,10 @@ T001 y T002 establecen el estado de grabación que necesita T003. T004 se apoya 
 - Se instalaron las dependencias con pip en dos entornos vacíos. El primero usó el paquete del proyecto y arrancó desde fuera del checkout. El segundo usó requirements.txt. Ambos guardaron clips de la fuente de prueba.
 - Transcripciones importó nueve segundos de voz sintetizada en español. El motor escribió el texto y su registro. Los botones abrieron la carpeta del resultado y el archivo del registro a través del escritorio de Windows.
 - Se verificó el reintento de guardado y la recuperación después de reiniciar el motor con tramos pendientes. La prueba comprueba que se recuperan solo los tramos terminados y sus pistas. El historial de las versiones anteriores sigue siendo legible.
+- En el último barrido, las nueve ventanas principales informadas por los procesos de Windows tenían una entrada en el selector. Este ofrecía doce ventanas en total, incluida una de Teams en ese momento.
+- En la versión validada, la instalación desde el paquete guardó un MP4 de 2,57 s y la instalación con requirements.txt guardó uno de 2,60 s. Ambas pasaron `pip check`. Pasaron 325 pruebas del grabador y las 10 pruebas del entorno separado del transcriptor.
+
+## Pruebas en macOS 15 Apple Silicon · 25 de noviembre de 2026
+
+- GitHub Actions construyó el instalador de 236 MB y montó la imagen de disco. El ejecutable de ese instalador abrió la pantalla QML, seleccionó la ventana de prueba por su identificador y completó grabación, pausa, reanudación y guardado. FFmpeg decodificó el video de 3,07 s, comprobó la imagen verde de la fuente y encontró la pista Sistema en AAC. La suite del grabador comunicó 314 pruebas aprobadas y 11 omitidas.
+- El motor se instaló en su propio entorno. La pantalla Transcripciones importó una muestra generada con la voz del sistema. El motor escribió 244 caracteres y el escritorio abrió la carpeta del resultado y el registro. Los dos trabajos finalizaron correctamente sobre la revisión `101aeb0`. [Ejecución completa y descarga del instalador](https://github.com/mcjeikk/meeting-recorder/actions/runs/45620528341)
