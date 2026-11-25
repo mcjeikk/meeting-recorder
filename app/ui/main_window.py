@@ -64,11 +64,17 @@ def app_icon() -> QIcon:
     return _make_dot_icon("#e74c3c")
 
 
+def qml_entry() -> Path:
+    if _MAC and getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parents[1] / "Resources" / "app" / "ui" / "qml" / "Main.qml"
+    return Path(__file__).with_name("qml") / "Main.qml"
+
 
 class MainWindow(QMainWindow):
     statusChanged = Signal()
     metricsChanged = Signal()
     resultsChanged = Signal()
+    closed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -78,7 +84,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._status = "Listo para grabar"
         self._last_output = ""
-        self._quit_after_finalize = self._closing = False
+        self._quit_after_finalize = False
         self._hotkeys_registered = self._pending_hotplug = False
         self._tick_count = self._silent_ticks = 0
         self._silence_warned = False
@@ -142,7 +148,7 @@ class MainWindow(QMainWindow):
                           ("previewImage", self.preview)):
             context.setContextProperty(name, obj)
         self.view.engine().addImageProvider("preview", self.preview.provider)
-        self.view.setSource(QUrl.fromLocalFile(str(Path(__file__).with_name("qml") / "Main.qml")))
+        self.view.setSource(QUrl.fromLocalFile(str(qml_entry())))
         if self.view.status() == QQuickWidget.Error:
             raise RuntimeError("\n".join(error.toString() for error in self.view.errors()))
         self.setCentralWidget(self.view)
@@ -337,10 +343,14 @@ class MainWindow(QMainWindow):
     def _on_saved(self, path):
         self._last_output = path
         self.resultsChanged.emit()
-        queued = False
+        message = "Grabación guardada"
         if self._config.transcribe_after_recording and self.library.available:
-            queued = self.library.enqueue_recording(path)
-        self._set_status("Grabación guardada" + (" · transcripción en cola" if queued else ""))
+            try:
+                if self.library.enqueue_recording(path):
+                    message += " · transcripción en cola"
+            except (OSError, RuntimeError, ValueError) as exc:
+                message += f". No se pudo encolar la transcripción. {exc}"
+        self._set_status(message)
         if self._quit_after_finalize:
             self.close()
             return
@@ -448,7 +458,7 @@ class MainWindow(QMainWindow):
     def _setup_tray(self) -> None:
         self._tray = QSystemTrayIcon(app_icon(), self)
         self._tray.setToolTip("Grabador de Reuniones")
-        menu = QMenu()
+        menu = QMenu(self)
         act_show = QAction("Mostrar ventana", self)
         act_show.triggered.connect(self._show_from_tray)
         act_rec = QAction("Iniciar / Detener", self)
@@ -477,12 +487,7 @@ class MainWindow(QMainWindow):
         self._hotkeys = hotkeys_cls(
             self.recordAction, self.session.togglePause, self.toggleMute
         )
-        try:
-            from PySide6.QtWidgets import QApplication
-
-            QApplication.instance().installNativeEventFilter(self._hotkeys)
-        except Exception:
-            pass
+        QApplication.instance().installNativeEventFilter(self._hotkeys)
 
     def _setup_device_watcher(self) -> None:
         """Auto-refresh de mics ante hotplug Windows (debounce en MainWindow)."""
@@ -497,12 +502,7 @@ class MainWindow(QMainWindow):
             self._mac_device_poll.start()
             return
         self._device_watcher = DeviceChangeWatcher(self._on_device_change_event)
-        try:
-            from PySide6.QtWidgets import QApplication
-
-            QApplication.instance().installNativeEventFilter(self._device_watcher)
-        except Exception:
-            pass
+        QApplication.instance().installNativeEventFilter(self._device_watcher)
 
 
     def _poll_mac_devices(self):
@@ -568,7 +568,6 @@ class MainWindow(QMainWindow):
         if not self._quit_after_finalize and self.library.worker.has_active_job():
             self._dialog(QMessageBox.Information, "Transcripción en curso",
                          "La transcripción continúa en segundo plano. Puedes consultar el resultado al volver.").exec()
-        self._closing = True
         self._timer.stop()
         self._hotplug_debounce.stop()
         self._hotplug_followup.stop()
@@ -576,8 +575,7 @@ class MainWindow(QMainWindow):
             self._mac_device_poll.stop()
         self._hotkeys.unregister()
         for native_filter in (self._hotkeys, getattr(self, "_device_watcher", None)):
-            from PySide6.QtCore import QAbstractNativeEventFilter
-            if isinstance(native_filter, QAbstractNativeEventFilter):
+            if native_filter is not None:
                 QApplication.instance().removeNativeEventFilter(native_filter)
         self.library.worker.shutdown()
         self.preview.close()
@@ -585,3 +583,4 @@ class MainWindow(QMainWindow):
         self._tray.hide()
         self.view.setSource(QUrl())
         super().closeEvent(event)
+        self.closed.emit()

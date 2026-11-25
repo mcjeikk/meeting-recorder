@@ -141,18 +141,18 @@ O desde la terminal, si prefieres:
 python -m app.main
 ```
 
-Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
+La pestaña **Grabar** reúne la fuente, la vista previa y los dos medidores. El cronómetro y los controles de grabación permanecen en el borde inferior, también al cambiar de pestaña.
 
 1. **¿Qué quieres grabar?** → elige una **ventana** de la lista o una **pantalla**
    (si tienes varios monitores, cada uno aparece como «Pantalla N»).
    En Windows, la lista se actualiza cada vez que la despliegas. Si Teams abre
    la reunión en otra ventana, puedes elegirla junto al calendario. También
-   puedes pulsar 🔄 **Actualizar** para renovar la lista y la vista previa.
+   puedes pulsar **Actualizar** para renovar la lista y la vista previa.
    La rueda sobre una lista desplegable **no cambia** la
    opción salvo que hayas hecho clic en ella.
 2. **Micrófono** → elige tu micrófono. El medidor muestra el nivel **en vivo,
    incluso antes de grabar** (para que verifiques el sonido al configurar).
-   👉 **Puedes cambiar de micrófono o silenciarlo (botón 🎤/🔇) durante la grabación.**
+   **Puedes cambiar de micrófono o pulsar Silenciar durante la grabación.**
    - **Indicador de reunión**: la app detecta si **Teams/Zoom/Meet u otra app está
      usando el micrófono** (igual que el ícono junto al reloj) y lo muestra.
    - Opción **experimental**: *"Auto-silenciar fuera de llamada (experimental)"*
@@ -163,8 +163,8 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
      Teams sigue capturando, Windows cree que hay llamada): para eso usa 🔇 o
      Ctrl+Shift+M.
 3. **Audio del sistema** → déjalo **activado** para grabar lo que suena en la reunión.
-4. **Carpeta de salida** → dónde se guardará el archivo.
-5. Pulsa **● Grabar**. El botón cambia a **■ Detener** y aparece **⏸ Pausar**; verás
+4. En **Ajustes** puedes elegir la carpeta de salida y consultar las opciones de audio y transcripción.
+5. Pulsa **Grabar**. El botón cambia a **Detener** y aparece **Pausar**. Verás
    un cronómetro y un punto rojo de grabación.
 6. Al **Detener**, la app genera el MP4 final y te ofrece **Abrir carpeta**.
 
@@ -173,7 +173,7 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
 - **Ctrl + Shift + P** → pausar / reanudar. *(El tiempo en pausa no cuenta en el video.)*
 - **Ctrl + Shift + M** → silenciar / activar el micrófono. *(Muteado = se graba
   silencio en tu pista, sin perder la sincronía.)*
-- **Ocultar esta ventana en grabaciones y capturas** (casilla en *Fuente*,
+- **Excluir esta ventana de la captura** (casilla en *Ajustes*,
   marcada por defecto): el Grabador no sale en el video ni en recortes de
   pantalla. Desmárcala si quieres que se vea.
 - **Ícono en la bandeja** para control rápido. La **X** cierra la app (si hay una
@@ -185,7 +185,7 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
 Si escuchas la reunión por **altavoces**, tu micrófono captará ese sonido y se oirá
 **eco**. Dos ayudas:
 1. La forma más limpia es usar **audífonos** (elimina el eco de raíz).
-2. Activa **"Reducir eco del micrófono"** (casilla en *Audio del sistema*): al
+2. Activa **Reducir eco del micrófono** en **Ajustes**. Al
    terminar la grabación, la app usa el audio del sistema como referencia para
    **cancelar el eco** de tu pista de micrófono (filtro adaptativo; ~15 dB de
    reducción en pruebas). El procesado tarda unos segundos al finalizar.
@@ -225,11 +225,11 @@ Durante la captura se usan archivos temporales **MKV/WAV** (resistentes a cierre
 
 ## 📝 Transcripción automática (Fase 2)
 
-Marca la casilla **"📝 Transcribir al terminar"** (sección 4) y, al detener cada
+Marca **Transcribir al terminar** en **Grabar** y, al detener cada
 grabación, la app la transcribe sola con el proyecto **Transcriptor** (faster-whisper
 + pyannote, en local). También puedes transcribir **cualquier audio o vídeo que
 ya tengas** (podcast, exportación de llamada, grabación antigua, etc.) con
-**Transcribir archivo…** o arrastrando el archivo a la ventana: usa la misma
+**Transcribir archivo…** en la pestaña **Transcripciones**, o arrastrando el archivo a la ventana. Usa la misma
 cola, calidad, **uso del PC** e idioma. El archivo original no se mueve; las
 transcripciones (de reuniones y de archivos importados) quedan en la
 **Carpeta de salida**:
@@ -246,7 +246,7 @@ transcripciones (de reuniones y de archivos importados) quedan en la
 - **La grabación siempre manda**: la transcripción nunca arranca mientras grabas y,
   si empiezas a grabar a mitad de una, el proceso se **pausa por completo** (cero
   CPU, sin perder el avance) y se reanuda al detener.
-- **Uso del PC** (sección 4, independiente de Rápido/Equilibrado/Máxima): por
+- **Uso del equipo** (en **Ajustes**, independiente de Rápido/Equilibrado/Máxima). Por
   defecto **Usar más CPU** (casi todos los núcleos; el escritorio puede ir
   pesado). **Dejar el PC usable** limita núcleos y baja la prioridad para que
   otras apps no se congelen (tarda más; puedes usar Máxima calidad igual).

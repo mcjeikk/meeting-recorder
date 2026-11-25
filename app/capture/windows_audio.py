@@ -349,9 +349,6 @@ class MicCapture(AudioCapture):
         self._seg_count += 1
 
         w = wave.open(path, "wb")
-        w.setnchannels(ch)
-        w.setsampwidth(2)
-        w.setframerate(rate)
 
         def _callback(indata, _frames, _time, _status):
             if self._muted:
@@ -369,6 +366,7 @@ class MicCapture(AudioCapture):
         with self._lock:
             self._wave = w
         try:
+            w.setparams((ch, 2, rate, 0, "NONE", ""))
             self._stream = sd.InputStream(
                 samplerate=rate, blocksize=_CHUNK, device=device.index,
                 channels=ch, dtype="int16", callback=_callback,

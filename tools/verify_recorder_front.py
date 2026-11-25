@@ -65,6 +65,8 @@ def control(window, name):
 
 
 def click(window, name):
+    # Los delegates y las posiciones de Flow se calculan en el siguiente frame.
+    QTest.qWait(80)
     item = control(window, name)
     point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
     if not item.isVisible() or not item.isEnabled():
@@ -90,7 +92,7 @@ class Tone:
         return .1
 
 
-def check_file(path):
+def check_file(path, elapsed):
     ff = get_ffmpeg_exe()
     meta = subprocess.run([ff, "-hide_banner", "-i", str(path)],
                           capture_output=True).stderr.decode(errors="replace")
@@ -101,8 +103,8 @@ def check_file(path):
     if len(rgb) != 3 or rgb[1] <= max(rgb[0], rgb[2]) + 12:
         raise RuntimeError(f"El MP4 no contiene la ventana verde elegida. Color medio {list(rgb)}")
     duration = probe_duration(str(path))
-    if duration < 1:
-        raise RuntimeError(f"Clip demasiado corto: {duration}")
+    if duration < 1 or abs(duration - elapsed) > .65:
+        raise RuntimeError(f"Duración del MP4 {duration:.2f} s; tiempo grabado {elapsed:.2f} s.")
     print(f"MP4 reproducible · H.264 + Sistema (AAC) · {duration:.2f} s · RGB {list(rgb)}", flush=True)
 
 
@@ -147,9 +149,21 @@ def run(output):
             app.processEvents()
             source = win.picker.selected
             assert source.title == title and source.hwnd
+            if sys.platform == "win32":
+                import ctypes
+                from ctypes import wintypes
+                affinity = ctypes.windll.user32.GetWindowDisplayAffinity
+                affinity.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+                value = wintypes.DWORD()
+                for hidden, expected in ((True, 0x11), (False, 0), (True, 0x11)):
+                    win.pref.flag("exclude_window_from_capture", hidden)
+                    if not affinity(int(win.winId()), ctypes.byref(value)) or value.value != expected:
+                        raise RuntimeError("Windows no aplicó la exclusión de captura solicitada")
             win.resize(480, 720)
             app.processEvents()
             print(f"Grabador abierto · {win.view.rootObject().width():.0f} × {win.view.rootObject().height():.0f}", flush=True)
+            wait_for(app, lambda: bool(win.preview.url), "miniatura de la ventana seleccionada")
+            QTest.qWait(80)
             win.view.grabFramebuffer().save(str(output / "grabar.png"))
             click(win, "recordButton")
 
@@ -178,12 +192,13 @@ def run(output):
             wait_for(app, reached("recording"), "reanudación")
             started = time.monotonic()
             wait_for(app, lambda: time.monotonic() - started >= 1.2, "segundo tramo")
+            elapsed = win.session.recorder.elapsed_seconds()
             click(win, "recordButton")
             wait_for(app, lambda: win._last_output or win.session.phase == "recovery", "guardado", 90)
             if not win._last_output:
                 raise RuntimeError(win.statusText)
             path = Path(win._last_output)
-            check_file(path)
+            check_file(path, elapsed)
             win.close()
         return 0
     finally:

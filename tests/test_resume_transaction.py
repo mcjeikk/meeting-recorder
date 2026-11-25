@@ -23,6 +23,49 @@ class Capture:
 
 
 class TestResumeTransaction(unittest.TestCase):
+    def test_old_pending_sessions_with_nonconsecutive_cycles_keep_order(self):
+        from app.core.output_path import PendingSave
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for number in (0, 2, 10):
+                (root / f"video_seg{number}.mkv").touch()
+                (root / f"system_seg{number}.wav").touch()
+            rec = Recorder()
+            rec.adopt_pending(PendingSave(tmp, "", "", "Prueba"))
+            self.assertEqual([Path(p).stem for p in rec._video_segments],
+                             ["video_seg0", "video_seg2", "video_seg10"])
+            self.assertEqual([(Path(p).stem, c) for p, c in rec._system_segments],
+                             [("system_seg0", 0), ("system_seg2", 1), ("system_seg10", 2)])
+
+    def test_encoder_warmup_does_not_shorten_the_video_clock(self):
+        import numpy as np
+        from app.capture.windows_video import WindowsGraphicsCapture
+
+        capture = WindowsGraphicsCapture(VideoSource("window", "Prueba", hwnd=1), fps=10)
+        capture._w = capture._h = 2
+        capture._latest = np.zeros((2, 2, 4), dtype=np.uint8)
+        capture._proc = Mock()
+        capture._running = True
+        elapsed = 0.
+        writes = []
+
+        def advance(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        def write(frame):
+            writes.append(elapsed)
+            if len(writes) == 1:
+                advance(.35)
+            if len(writes) == 6:
+                capture._running = False
+
+        capture._proc.stdin.write.side_effect = write
+        with patch("app.capture.windows_video.time.perf_counter", side_effect=lambda: elapsed), \
+             patch("app.capture.windows_video.time.sleep", side_effect=advance):
+            capture._write_loop()
+        self.assertAlmostEqual(writes[-1], .5)
+
     def test_mic_stream_open_and_start_failure_leave_no_wav(self):
         from app.capture.windows_audio import MicCapture
         for failure in ("constructor", "start"):

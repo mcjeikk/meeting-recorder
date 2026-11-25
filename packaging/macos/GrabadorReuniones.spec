@@ -35,7 +35,7 @@ def transcriptor_datas():
 
 datas = [(str(ROOT / "assets"), "assets")]
 datas += transcriptor_datas()
-datas += collect_data_files("app.ui", includes=["qml/*"])
+datas += [(str(ROOT / "app" / "ui" / "qml"), "app/ui/qml")]
 datas += collect_data_files("imageio_ffmpeg", include_py_files=False)
 
 binaries = []

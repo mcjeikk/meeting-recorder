@@ -77,14 +77,14 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(True)
 
     window = MainWindow()
+    window.closed.connect(app.quit)
     window.show()
 
     # Permitir cerrar con Ctrl+C desde la consola. El bucle de Qt bloquea las
     # señales de Python; un temporizador que despierta el intérprete cada 200 ms
     # deja que la señal se procese.
     def _handle_sigint(*_args):
-        window._quit_after_finalize = False
-        app.quit()
+        window.close()
 
     try:
         signal.signal(signal.SIGINT, _handle_sigint)

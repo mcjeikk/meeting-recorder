@@ -1,6 +1,6 @@
 # Interfaz de grabación
 
-**Spec Kit 032 · Propuesta · 25 de noviembre de 2026**
+**Spec Kit 032 · En verificación · 25 de noviembre de 2026**
 
 ## Escenarios de usuario
 
@@ -22,7 +22,7 @@
 
 ## Criterios de éxito
 
-- Completar el recorrido elegir fuente, grabar, pausar, reanudar y guardar un MP4 válido con las pistas habilitadas.
+- Completar el recorrido elegir fuente, grabar, pausar, reanudar y guardar un MP4 válido con las pistas habilitadas. Su duración debe corresponder al tiempo grabado en los dos tramos.
 - Comprobar la vista inicial y los controles persistentes con ratón y teclado. Probar también el tamaño mínimo de ventana admitido.
 - Verificar pausa, error de reanudación, reintento y guardado con una fuente controlada. Ejecutar las suites del grabador y del transcriptor y comprobar la distribución para Windows y macOS.
 - Abrir la carpeta y el registro de una transcripción de muestra mediante sus botones en Windows y en Mac.

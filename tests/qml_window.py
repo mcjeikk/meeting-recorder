@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from PySide6.QtCore import QObject, QPointF, Qt
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from app.core.config import AppConfig, VideoSource
 from app.transcription.jobs import JobStore
 from app.ui.main_window import MainWindow
+from app.ui.hotkeys import GlobalHotkeys
 
 
 def make_window(case, *, available=True):
@@ -35,7 +36,7 @@ def make_window(case, *, available=True):
     w = MainWindow()
     check_preview.reset_mock()
     w._tray = Mock()
-    w._hotkeys = Mock()
+    w._hotkeys = GlobalHotkeys(w.recordAction, w.session.togglePause, w.toggleMute)
     w._hotkeys_registered = True
     w._timer.stop()
     if w.platformMac:

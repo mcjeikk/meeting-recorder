@@ -96,7 +96,9 @@ def _run_with_progress(
     except Exception:
         pass
     proc.wait()
-    t.join(timeout=1)
+    t.join()
+    proc.stdout.close()
+    proc.stderr.close()
     return proc.returncode, "".join(stderr_chunks)
 
 

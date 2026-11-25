@@ -139,20 +139,25 @@ class PendingSave:
     intended_dest: str
     stem: str
     created: str = ""
+    video_files: Optional[list[str]] = None
+    mic_cycles: Optional[dict[str, int]] = None
 
     def has_media(self) -> bool:
         if self.staging_mp4 and Path(self.staging_mp4).is_file() and Path(self.staging_mp4).stat().st_size > 0:
             return True
-        return session_has_media(self.temp_dir)
+        return bool(self.temp_dir) and session_has_media(self.temp_dir)
 
 
 def write_pending(pending: PendingSave) -> None:
     if not pending.created:
         pending.created = datetime.now().isoformat(timespec="seconds")
-    pending_save_path().write_text(
+    path = pending_save_path()
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
         json.dumps(asdict(pending), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    temporary.replace(path)
 
 
 def load_pending() -> Optional[PendingSave]:
@@ -167,6 +172,8 @@ def load_pending() -> Optional[PendingSave]:
             intended_dest=str(data.get("intended_dest") or ""),
             stem=str(data.get("stem") or ""),
             created=str(data.get("created") or ""),
+            video_files=data.get("video_files") if isinstance(data.get("video_files"), list) else None,
+            mic_cycles=data.get("mic_cycles") if isinstance(data.get("mic_cycles"), dict) else None,
         )
     except Exception:
         return None

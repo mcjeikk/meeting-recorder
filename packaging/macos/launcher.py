@@ -32,7 +32,12 @@ def _self_check() -> int:
         from PySide6 import QtWidgets  # noqa: F401
 
         import app.capture.mac_sck  # noqa: F401
-        import app.ui.main_window  # noqa: F401
+        from app.ui.main_window import qml_entry
+
+        if not qml_entry().is_file():
+            falla("qml", f"falta {qml_entry()}")
+        else:
+            informe["qml"] = str(qml_entry())
 
         informe["imports"] = "ok"
     except Exception as e:  # noqa: BLE001

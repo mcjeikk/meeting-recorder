@@ -79,6 +79,7 @@ class Recorder:
         self._video: Optional[VideoCapture] = None
         self._system_audio = None  # SystemAudioCapture del tramo actual
         self._mic = None           # MicCapture (persiste entre pausas)
+        self._recovered_mic: List[Tuple[str, int]] = []
 
         self._settings: Optional[RecordingSettings] = None
         self._temp_dir: Optional[str] = None
@@ -151,7 +152,7 @@ class Recorder:
         self._current_mic_device = settings.mic_device
 
         self._mic = MicCapture(self._temp_dir)
-        self._clock.reset()
+        self._recovered_mic = []
         try:
             self._open_video_segment()
             if settings.capture_system_audio:
@@ -166,6 +167,7 @@ class Recorder:
                 self._cleanup_temp()
             raise RuntimeError(f"No se pudo iniciar la grabación: {exc}") from exc
 
+        self._clock.reset()
         self._recording = True
         self._paused = False
         self._on_status("Grabando…")
@@ -288,6 +290,8 @@ class Recorder:
                 staging_mp4=self._staging_mp4 or "",
                 intended_dest=intended,
                 stem=self._stem or "",
+                video_files=[Path(path).name for path in self._video_segments],
+                mic_cycles={Path(path).name: cycle for path, cycle in self._mic_segments()},
             )
         )
 
@@ -332,8 +336,33 @@ class Recorder:
             self._staging_mp4 = None
         self._stem = pending.stem or "Grabacion"
         if self._temp_dir and os.path.isdir(self._temp_dir):
-            segs = sorted(Path(self._temp_dir).glob("video_seg*.mkv"))
-            self._video_segments = [str(p) for p in segs]
+            root = Path(self._temp_dir)
+
+            def numbered(prefix, extension):
+                files = []
+                for path in root.glob(f"{prefix}*.{extension}"):
+                    suffix = path.stem.removeprefix(prefix)
+                    if suffix.isdecimal():
+                        files.append((int(suffix), path))
+                return sorted(files)
+
+            video = numbered("video_seg", "mkv")
+            if pending.video_files is not None:
+                video = [(cycle, path) for cycle, path in video if path.name in pending.video_files]
+            self._video_segments = [str(path) for _, path in video]
+            positions = {cycle: index for index, (cycle, _) in enumerate(video)}
+            self._system_segments = [(str(path), positions[cycle]) for cycle, path in numbered("system_seg", "wav")
+                                     if cycle in positions]
+            # Los marcadores antiguos no guardaban el ciclo de cada cambio de micrófono.
+            self._mic = None
+            self._recovered_mic = []
+            for index, path in numbered("mic_seg_", "wav"):
+                if pending.mic_cycles is None:
+                    cycle = min(index, max(0, len(self._video_segments) - 1))
+                else:
+                    cycle = pending.mic_cycles.get(path.name, -1)
+                if isinstance(cycle, int) and 0 <= cycle < len(self._video_segments):
+                    self._recovered_mic.append((str(path), cycle))
 
     def retry_save(self, output_dir: Path) -> None:
         """Reintenta copiar (o mux + copiar) a una carpeta que eligió el usuario."""
@@ -367,19 +396,6 @@ class Recorder:
                     tracks: List[Track] = []
                     tracks += self._build_system_track(video_durs, cycle_start)
                     tracks += self._build_mic_track(video_durs, cycle_start)
-                    if not tracks and self._temp_dir:
-                        from app.encode.ffmpeg import Segment, Track as _Trk
-
-                        sys_files = sorted(Path(self._temp_dir).glob("system_seg*.wav"))
-                        mic_files = sorted(Path(self._temp_dir).glob("mic_seg_*.wav"))
-                        if sys_files:
-                            tracks.append(
-                                _Trk("Sistema", [Segment(str(p), 0.0) for p in sys_files])
-                            )
-                        if mic_files:
-                            tracks.append(
-                                _Trk("Microfono", [Segment(str(p), 0.0) for p in mic_files])
-                            )
                     self._tracks = tracks
                     self._total_seconds = sum(video_durs)
             intended = str(dest_file_path(Path(output_dir), self._stem or "Grabacion"))
@@ -502,12 +518,13 @@ class Recorder:
             segs.append(Segment(path, offset))
         return [Track("Sistema", segs)] if segs else []
 
+    def _mic_segments(self):
+        return self._mic.segments() if self._mic is not None else self._recovered_mic
+
     def _build_mic_track(self, video_durs, cycle_start) -> List[Track]:
-        if self._mic is None:
-            return []
         # Agrupar los segmentos de micrófono por tramo, en orden.
         groups: "OrderedDict[int, List[str]]" = OrderedDict()
-        for path, cycle in self._mic.segments():
+        for path, cycle in self._mic_segments():
             if os.path.exists(path) and cycle < len(video_durs):
                 groups.setdefault(cycle, []).append(path)
 

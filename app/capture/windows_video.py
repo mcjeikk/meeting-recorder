@@ -324,11 +324,11 @@ class WindowsGraphicsCapture(VideoCapture):
                 except Exception:
                     break
             next_t += interval
+            # Un arranque lento del codificador no acorta el video. Los fotogramas
+            # siguientes alcanzan el reloj de la sesión tan pronto lo permite la tubería.
             delay = next_t - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
-            else:
-                next_t = time.perf_counter()
 
     def _safe_stop_capture(self) -> None:
         if self._ctrl is not None:
