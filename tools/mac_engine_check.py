@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,10 @@ def main() -> int:
         cmd = [sys.executable, str(ROOT / "verify_transcription.py"), str(mp4),
                "--quick", "--no-speakers", "--seconds", "15", "--timeout", "1800"]
         code = subprocess.run(cmd, cwd=str(ROOT)).returncode
+        if code == 0:
+            frontend = [sys.executable, "-m", "tools.verify_transcription_front", str(mp4), str(raiz)]
+            code = subprocess.run(frontend, cwd=str(ROOT),
+                                  env={**os.environ, "QT_QPA_PLATFORM": "cocoa"}).returncode
     if code != 0:
         dump_sandbox_logs()
     print("==> Resultado:", "OK" if code == 0 else f"FALLÓ ({code})")

@@ -366,25 +366,29 @@ class MicCapture(AudioCapture):
                     self._wave.writeframes(data)
             self._level = level
 
-        stream = sd.InputStream(
-            samplerate=rate,
-            blocksize=_CHUNK,
-            device=device.index,
-            channels=ch,
-            dtype="int16",
-            callback=_callback,
-        )
         with self._lock:
             self._wave = w
+        try:
+            self._stream = sd.InputStream(
+                samplerate=rate, blocksize=_CHUNK, device=device.index,
+                channels=ch, dtype="int16", callback=_callback,
+            )
+            self._stream.start()
+        except Exception:
+            self._close_segment()
+            os.remove(path)
+            raise
+        with self._lock:
             self._segments.append((path, self._cycle))
-        self._stream = stream
         self._device = device
-        stream.start()
 
     def _close_segment(self) -> None:
         if self._stream is not None:
             try:
                 self._stream.stop()
+            except Exception:
+                pass
+            try:
                 self._stream.close()
             except Exception:
                 pass
@@ -397,6 +401,7 @@ class MicCapture(AudioCapture):
                     pass
                 self._wave = None
         self._level = 0.0
+        self._device = None
 
     def switch_device(self, device: Optional[AudioDevice], cycle: Optional[int] = None) -> None:
         """Cambia de micrófono (o lo apaga con None) durante la grabación."""

@@ -184,6 +184,11 @@ class VideoSource:
     is_primary: bool = False
 
     @property
+    def selection_key(self) -> tuple[str, Optional[int]]:
+        """Identidad de la fuente entre dos consultas del selector."""
+        return self.kind, self.hwnd if self.kind == "window" else self.monitor_index
+
+    @property
     def label(self) -> str:
         if self.kind == "screen":
             n = self.monitor_index or 1

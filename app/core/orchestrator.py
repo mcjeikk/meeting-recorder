@@ -183,7 +183,8 @@ class Recorder:
     def resume(self) -> None:
         if not self._recording or not self._paused:
             return
-        self._clock.resume()
+        video_count = len(self._video_segments)
+        system_count = len(self._system_segments)
         self._cycle += 1
         try:
             self._open_video_segment()
@@ -192,8 +193,23 @@ class Recorder:
             if self._mic is not None:
                 self._mic.switch_device(self._current_mic_device, cycle=self._cycle)
         except Exception as exc:
-            self._on_status(f"No se pudo reanudar: {exc}")
+            self._stop_current_captures()
+            if self._mic is not None:
+                self._mic.stop()
+            del self._video_segments[video_count:]
+            del self._system_segments[system_count:]
+            cleanup_errors = []
+            if self._temp_dir is not None:
+                for name in (f"video_seg{self._cycle}.mkv", f"system_seg{self._cycle}.wav"):
+                    try:
+                        Path(self._temp_dir, name).unlink(missing_ok=True)
+                    except OSError as cleanup_error:
+                        cleanup_errors.append(str(cleanup_error))
+            self._cycle -= 1
+            detail = " · " + ", ".join(cleanup_errors) if cleanup_errors else ""
+            self._on_status(f"No se pudo reanudar: {exc}{detail}")
             return
+        self._clock.resume()
         self._paused = False
         self._on_status("Grabando…")
 
@@ -235,8 +251,8 @@ class Recorder:
         assert self._settings is not None and self._temp_dir is not None
         path = os.path.join(self._temp_dir, f"video_seg{self._cycle}.mkv")
         cap = _make_video_capture(self._settings.video_source, self._settings.fps)
-        cap.start(path)
         self._video = cap
+        cap.start(path)
         self._video_segments.append(path)
 
     def _open_system_segment(self) -> None:
@@ -245,8 +261,8 @@ class Recorder:
         assert self._temp_dir is not None
         path = os.path.join(self._temp_dir, f"system_seg{self._cycle}.wav")
         cap = make_system_audio_capture()
-        cap.start(path)
         self._system_audio = cap
+        cap.start(path)
         self._system_segments.append((path, self._cycle))
 
     # --- internos -----------------------------------------------------------
@@ -380,10 +396,10 @@ class Recorder:
 
     def _finish_success(self, dest: str) -> None:
         clear_pending()
-        self._on_status("Listo")
-        self._on_finished(dest)
         self._cleanup_temp()
         self._cleanup_staging()
+        self._on_status("Listo")
+        self._on_finished(dest)
 
     def _cleanup_staging(self) -> None:
         if self._staging_mp4 and os.path.isfile(self._staging_mp4):

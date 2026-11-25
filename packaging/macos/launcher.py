@@ -78,6 +78,12 @@ def _self_check() -> int:
 
 
 if __name__ == "__main__":
+    if "--verify-frontend" in sys.argv or "--frontend-fixture" in sys.argv:
+        from verify_recorder_front import fixture_window, run
+
+        if sys.argv[1] == "--frontend-fixture":
+            raise SystemExit(fixture_window(sys.argv[2]))
+        raise SystemExit(run(sys.argv[2]))
     if "--self-check" in sys.argv:
         raise SystemExit(_self_check())
     from app.main import main

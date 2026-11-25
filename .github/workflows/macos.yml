@@ -52,6 +52,16 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export MR_VERSION="${GITHUB_REF_NAME#v}"; fi
           PYTHON=python bash packaging/macos/build.sh
 
+      - name: Grabar una ventana desde la aplicación del instalador
+        env:
+          QT_QPA_PLATFORM: cocoa
+        run: |
+          mount="$RUNNER_TEMP/recorder-dmg"
+          mkdir -p "$mount"
+          hdiutil attach dist/*.dmg -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          "$mount/Grabador de Reuniones.app/Contents/MacOS/Grabador de Reuniones" --verify-frontend "$RUNNER_TEMP/recorder-front"
+
       - uses: actions/upload-artifact@v4
         with:
           name: GrabadorDeReuniones-macos-arm64

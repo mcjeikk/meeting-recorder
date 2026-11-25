@@ -69,6 +69,21 @@ def declared_distributions() -> set:
 
 
 class TestRequirementsDeclared(unittest.TestCase):
+    def test_wheel_uses_the_same_platform_requirements_and_ships_qml(self):
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # Python 3.10 del proyecto
+            from pip._vendor import tomli as tomllib
+
+        with (ROOT / "pyproject.toml").open("rb") as source:
+            config = tomllib.load(source)
+        self.assertIn("dependencies", config["project"]["dynamic"])
+        setuptools = config["tool"]["setuptools"]
+        self.assertEqual(setuptools["dynamic"]["dependencies"]["file"], ["requirements.txt"])
+        files = setuptools["package-data"]["app.ui"]
+        for path in (ROOT / "app" / "ui" / "qml").iterdir():
+            self.assertTrue(any(path.match(pattern) for pattern in files), path.name)
+
     def test_every_third_party_import_is_known(self) -> None:
         desconocidos = {
             mod: donde

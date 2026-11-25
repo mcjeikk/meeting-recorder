@@ -1,40 +1,43 @@
-"""Layout clásico: paneles agrupados, Grabar en el flujo, rueda no hijackea combos."""
-from __future__ import annotations
-
-import os
-import sys
+"""Los controles de sesión permanecen al alcance con ratón y teclado."""
 import unittest
-from unittest.mock import MagicMock, patch
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from tests.qml_window import click, item, make_window, position
 
 
-@unittest.skipUnless(os.environ.get("QT_QPA_PLATFORM") != "skip", "Qt UI")
 class TestDesktopUxLayout(unittest.TestCase):
-    def test_classic_groupboxes_and_record_label(self) -> None:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QApplication, QGroupBox
+    def test_first_view_and_pinned_actions(self):
+        w = make_window(self)
+        w.resize(480, 720)
+        self.app.processEvents()
+        footer = item(w, "recordButton")
+        for name in ("sourcePicker", "micPicker", "systemAudio", "autoTranscribe"):
+            control = item(w, name)
+            self.assertTrue(control.isVisible())
+            self.assertTrue(0 < position(control).y() < position(footer).y() < 720)
+        self.assertEqual(footer.property("text"), "Grabar")
+        for size in ((480, 720), (360, 320)):
+            w.resize(*size)
+            self.app.processEvents()
+            y = position(footer).y()
+            scroller = item(w, "recordingScroll").property("contentItem")
+            scroller.setProperty("contentY", 200)
+            self.app.processEvents()
+            self.assertEqual(position(footer).y(), y)
+            self.assertLess(y, size[1])
+            self.assertGreater(y, 0)
+            w.session._set_phase("paused")
+            self.assertTrue(item(w, "pauseButton").isVisible())
+            self.assertLess(position(item(w, "pauseButton")).x(), position(footer).x())
+            w.session._set_phase("idle")
 
-        app = QApplication.instance() or QApplication(sys.argv)
-        from app.ui.main_window import MainWindow
-
-        with patch("app.ui.main_window.threading.Thread") as thr:
-            thr.return_value = MagicMock()
-            with patch.object(MainWindow, "_update_preview", lambda self: None):
-                with patch("app.ui.main_window.AudioMonitor"):
-                    w = MainWindow()
-        try:
-            self.assertTrue(w.findChildren(QGroupBox))
-            self.assertIn("Grabar", w._record_btn.text())
-            self.assertTrue(hasattr(w, "_hide_self_check"))
-            self.assertEqual(w._source_combo.focusPolicy(), Qt.FocusPolicy.StrongFocus)
-            self.assertIn("#2ecc71", w.styleSheet().lower())
-            self.assertIn("Transcribir archivo", w._tx_file_btn.text())
-            self.assertTrue(hasattr(w, "_tx_speakers"))
-            self.assertTrue(hasattr(w, "_tx_impact"))
-        finally:
-            w.close()
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_keyboard_navigation_and_settings(self):
+        w = make_window(self)
+        tab = item(w, "tab0")
+        tab.forceActiveFocus()
+        QTest.keyClick(w.view, Qt.Key_Right)
+        self.assertEqual(w.view.rootObject().property("page"), 1)
+        self.assertTrue(item(w, "importButton").isVisible())
+        click(w, "tab2")
+        self.assertTrue(item(w, "transcription_num_speakers").isVisible())
+        self.assertTrue(item(w, "recordButton").isVisible())

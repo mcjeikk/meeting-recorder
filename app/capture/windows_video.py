@@ -28,7 +28,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 # Ventanas de sistema que no tiene sentido ofrecer como fuente.
 _BLOCKLIST = {
     "", "Program Manager", "Default IME", "MSCTFIME UI",
-    "Windows Input Experience", "Configuración",
+    "Windows Input Experience",
 }
 
 
@@ -40,13 +40,16 @@ def list_windows() -> List[VideoSource]:
     import ctypes
     from ctypes import wintypes
 
-    user32 = ctypes.windll.user32
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
     results: List[VideoSource] = []
-    seen = set()
 
     EnumWindowsProc = ctypes.WINFUNCTYPE(
-        ctypes.c_bool, wintypes.HWND, wintypes.LPARAM
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
     )
+    user32.EnumWindows.argtypes = (EnumWindowsProc, wintypes.LPARAM)
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
 
     def _callback(hwnd, _lparam):
         if not user32.IsWindowVisible(hwnd):
@@ -57,14 +60,14 @@ def list_windows() -> List[VideoSource]:
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
         title = buf.value.strip()
-        if title in _BLOCKLIST or title in seen:
+        if title in _BLOCKLIST:
             return True
-        seen.add(title)
         results.append(VideoSource(kind="window", title=title, hwnd=int(hwnd)))
         return True
 
-    user32.EnumWindows(EnumWindowsProc(_callback), 0)
-    results.sort(key=lambda v: v.title.lower())
+    if not user32.EnumWindows(EnumWindowsProc(_callback), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    results.sort(key=lambda v: (v.title.casefold(), v.hwnd))
     return results
 
 

@@ -35,6 +35,7 @@ def transcriptor_datas():
 
 datas = [(str(ROOT / "assets"), "assets")]
 datas += transcriptor_datas()
+datas += collect_data_files("app.ui", includes=["qml/*"])
 datas += collect_data_files("imageio_ffmpeg", include_py_files=False)
 
 binaries = []
@@ -48,14 +49,14 @@ hiddenimports = collect_submodules("app") + [
 
 a = Analysis(
     [str(ROOT / "packaging" / "macos" / "launcher.py")],
-    pathex=[str(ROOT)],
+    pathex=[str(ROOT), str(ROOT / "tools")],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     excludes=[
         "tkinter", "cv2", "pyaudiowpatch", "windows_capture", "winrt", "winsdk",
         "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
-        "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtPdf", "PySide6.QtCharts",
+        "PySide6.QtPdf", "PySide6.QtCharts",
         "PySide6.QtDataVisualization", "PySide6.QtMultimedia",
     ],
     noarchive=False,

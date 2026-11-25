@@ -230,32 +230,11 @@ class TestClassifyAndEnqueue(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("QT_QPA_PLATFORM") != "skip", "Qt UI")
 class TestImportButtonHeadless(unittest.TestCase):
     def test_mainwindow_has_transcribe_file_button(self) -> None:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-        from PySide6.QtWidgets import QApplication
-        import sys
-
-        app = QApplication.instance() or QApplication(sys.argv)
-        from app.ui.main_window import MainWindow
-
-        with patch("app.ui.main_window.threading.Thread") as thr:
-            thr.return_value = MagicMock()
-            with patch.object(MainWindow, "_update_preview", lambda self: None):
-                with patch("app.ui.main_window.AudioMonitor"):
-                    w = MainWindow()
-        try:
-            self.assertTrue(hasattr(w, "_tx_file_btn"))
-            self.assertIn("Transcribir archivo", w._tx_file_btn.text())
-            self.assertTrue(hasattr(w, "_tx_queue_list"))
-            self.assertTrue(hasattr(w, "_tx_speakers"))
-            self.assertIn("Carpeta de salida", w._tx_file_hint.text())
-            self.assertTrue(w.acceptDrops())
-            w._tx_file_btn.setEnabled(True)
-            w._set_recording_ui(True)
-            self.assertTrue(w._tx_file_btn.isEnabled())
-        finally:
-            w.close()
-
-
-if __name__ == "__main__":
-    unittest.main()
+        from tests.qml_window import click, item, make_window
+        w = make_window(self)
+        click(w, "tab1")
+        self.assertTrue(item(w, "importButton").isEnabled())
+        self.assertTrue(w.acceptDrops())
+        w.session._set_phase("recording")
+        self.assertTrue(item(w, "importButton").isEnabled())
+        self.assertIsNotNone(item(w, "jobList"))

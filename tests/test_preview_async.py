@@ -30,31 +30,15 @@ class TestGrabMonitorFrame(unittest.TestCase):
 
 class TestPreviewAsyncSmoke(unittest.TestCase):
     def test_mainwindow_schedules_without_blocking_on_grab(self) -> None:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-        from PySide6.QtWidgets import QApplication
+        from app.ui.preview import Preview
+        from tests.qml_window import make_window
 
-        app = QApplication.instance() or QApplication(sys.argv)
-        from app.ui.main_window import MainWindow
-
-        with patch("app.ui.main_window.threading.Thread") as thr:
-            thr.return_value = MagicMock()
-            # Avoid real WGC during init's first _update_preview
-            with patch.object(MainWindow, "_update_preview", lambda self: None):
-                w = MainWindow()
-            # Restore and exercise schedule path
-            w._preview_busy = False
-            w._source_combo.setCurrentIndex(0)
-            MainWindow._update_preview(w)
-            self.assertTrue(w._preview_busy)
-            thr.assert_called()
-            # Coalesce: second call marks dirty, no extra thread required
-            calls = thr.call_count
-            MainWindow._update_preview(w)
-            self.assertTrue(w._preview_dirty)
-            self.assertEqual(thr.call_count, calls)
-            w.close()
-
-
-if __name__ == "__main__":
-    unittest.main()
+        update_preview = Preview.refresh
+        w = make_window(self)
+        with patch("app.ui.preview.Thread") as thread:
+            update_preview(w.preview)
+            self.assertTrue(w.preview._busy)
+            thread.assert_called_once()
+            update_preview(w.preview)
+            self.assertTrue(w.preview._dirty)
+            thread.assert_called_once()

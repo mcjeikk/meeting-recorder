@@ -145,8 +145,10 @@ Se abre una ventana con **tema oscuro**. Sigue el orden de arriba hacia abajo:
 
 1. **¿Qué quieres grabar?** → elige una **ventana** de la lista o una **pantalla**
    (si tienes varios monitores, cada uno aparece como «Pantalla N»).
-   Verás una **vista previa** (miniatura) de lo que se grabará. El botón 🔄
-   actualiza la lista. La rueda sobre una lista desplegable **no cambia** la
+   En Windows, la lista se actualiza cada vez que la despliegas. Si Teams abre
+   la reunión en otra ventana, puedes elegirla junto al calendario. También
+   puedes pulsar 🔄 **Actualizar** para renovar la lista y la vista previa.
+   La rueda sobre una lista desplegable **no cambia** la
    opción salvo que hayas hecho clic en ella.
 2. **Micrófono** → elige tu micrófono. El medidor muestra el nivel **en vivo,
    incluso antes de grabar** (para que verifiques el sonido al configurar).
